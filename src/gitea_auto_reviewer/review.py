@@ -13,6 +13,8 @@ FIELDS = {
     "changed_file_paths",
     "database_change",
     "database_change_details",
+    "data_change",
+    "data_change_details",
     "django_check",
     "migration",
     "api_contract",
@@ -41,6 +43,8 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
         },
         "database_change": {"enum": ["yes", "possible", "not_detected"]},
         "database_change_details": {"$ref": "#/$defs/impactDetails"},
+        "data_change": {"enum": ["changed", "possible", "not_detected"]},
+        "data_change_details": {"$ref": "#/$defs/impactDetails"},
         "django_check": {"enum": ["pass", "fail", "error", "not_run"]},
         "migration": {"enum": ["no_missing", "missing", "error", "not_run"]},
         "api_contract": {"enum": ["changed", "possible", "not_detected"]},
@@ -182,6 +186,8 @@ class Review:
     changed_file_paths: tuple[str, ...]
     database_change: str
     database_change_details: tuple[ImpactDetail, ...]
+    data_change: str
+    data_change_details: tuple[ImpactDetail, ...]
     django_check: str
     migration: str
     api_contract: str
@@ -215,6 +221,12 @@ class Review:
             raise ValueError("not_detected database change must not include details")
         if value["database_change"] != "not_detected" and not database_details:
             raise ValueError("database change requires concrete details")
+        _enum(value, "data_change", {"changed", "possible", "not_detected"})
+        data_details = _impact_details(value["data_change_details"])
+        if value["data_change"] == "not_detected" and data_details:
+            raise ValueError("not_detected data change must not include details")
+        if value["data_change"] != "not_detected" and not data_details:
+            raise ValueError("data change requires concrete details")
         _enum(value, "django_check", {"pass", "fail", "error", "not_run"})
         _enum(value, "migration", {"no_missing", "missing", "error", "not_run"})
         _enum(value, "api_contract", {"changed", "possible", "not_detected"})
@@ -236,6 +248,8 @@ class Review:
             changed_file_paths=changed_file_paths,
             database_change=value["database_change"],
             database_change_details=database_details,
+            data_change=value["data_change"],
+            data_change_details=data_details,
             django_check=value["django_check"],
             migration=value["migration"],
             api_contract=value["api_contract"],
@@ -327,6 +341,7 @@ def validate_grounding(review: Review, repository: Path, policy: str) -> None:
     for reference in (
         *review.external_integration_evidence,
         *(ref for item in review.database_change_details for ref in item.evidence),
+        *(ref for item in review.data_change_details for ref in item.evidence),
         *review.risk_evidence,
         *(ref for item in review.findings for ref in item.evidence),
     ):
@@ -366,6 +381,10 @@ def validate_verification(draft: Review, verified: Review) -> None:
     verified_database = (verified.database_change, verified.database_change_details)
     if verified_database != draft_database and verified_database != ("not_detected", ()):
         raise ValueError("verification introduced or rewrote database impact")
+    draft_data = (draft.data_change, draft.data_change_details)
+    verified_data = (verified.data_change, verified.data_change_details)
+    if verified_data != draft_data and verified_data != ("not_detected", ()):
+        raise ValueError("verification introduced or rewrote data-processing impact")
 
 
 def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str) -> str:
@@ -382,8 +401,10 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         "",
         _row("변경 파일", f"{review.changed_files}개"),
         *(f"  └ {path}" for path in review.changed_file_paths),
-        _row("DB 변경", {"yes": "있음", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.database_change]),
+        _row("DB 스키마 변경", {"yes": "있음", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.database_change]),
         *(f"  └ {item.description} — {', '.join(item.evidence)}" for item in review.database_change_details),
+        _row("데이터 처리 변경", {"changed": "있음", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.data_change]),
+        *(f"  └ {item.description} — {', '.join(item.evidence)}" for item in review.data_change_details),
         _row(
             "API Contract",
             {"changed": "변경", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.api_contract],

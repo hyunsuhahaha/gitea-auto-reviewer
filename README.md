@@ -231,8 +231,10 @@ shows only the compact result:
   └ scm/product_sync.py
   └ tests/test_product.py
   └ product/migrations/0008_product_remark.py
-DB 변경          있음
+DB 스키마 변경   있음
   └ product_product 테이블에 remark 컬럼 추가 — product/migrations/0008_product_remark.py:18
+데이터 처리 변경 있음
+  └ Product.remark 저장값을 상품 조회 응답에 포함 — product/services.py:18
 API Contract     변경
 외부연동         영향 가능
   └ SCM 상품 동기화 경로에서 Product 생성 확인 — scm/product_sync.py:74

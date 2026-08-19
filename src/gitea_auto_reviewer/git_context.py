@@ -127,6 +127,8 @@ Output rules:
 - key_changes must describe changed repository behavior only. Do not repeat CI check results there.
 - Use not_detected, never a definitive "none", when no direct DB, API-contract, or external-integration impact was found.
 - When database_change is yes or possible, database_change_details must name the concrete table/model and operation: table creation/removal, column addition/removal/type/null/default/index/constraint change, or data migration. Cite the migration or model file:line for every item. When not_detected, use an empty list.
+- database_change means schema only. Do not classify changes to values stored in existing columns, query filters, grouping, classification, or write timing as schema changes.
+- Use data_change and data_change_details for changes to values stored in existing columns, query conditions, grouping/classification rules, write/update/delete timing, or data meaning. Name the model/table or business record and the exact behavior change, with file:line evidence. Use an empty list when not_detected.
 - When external_integration is affected or possible, provide a concrete one-line reason and verified file:line evidence. When it is not_detected, use null and an empty evidence list.
 - Apply PROJECT_POLICY only when its explicit text supports the claim; do not invent policy conventions.
 - changed_files must be exactly {context.changed_files}.
@@ -163,6 +165,7 @@ This is an independent rejection pass, not a request for more findings.
 - Retained findings must be copied verbatim from DRAFT_REVIEW. Do not edit or add findings.
 - Retain the external-integration status, reason, and evidence verbatim or downgrade all three to not_detected, null, and an empty list. Do not rewrite them.
 - Retain database_change and database_change_details verbatim or downgrade them to not_detected and an empty list. Do not rewrite them.
+- Retain data_change and data_change_details verbatim or downgrade them to not_detected and an empty list. Do not rewrite them.
 - Recalculate risk and confidence after removals. Preserve deterministic CI fields exactly.
 - If none survive, return an empty findings list. Silence is a valid and preferred result.
 
