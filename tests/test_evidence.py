@@ -4,7 +4,22 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from gitea_auto_reviewer.evidence import Evidence, collect_evidence
+from gitea_auto_reviewer.evidence import Evidence, collect_evidence, safe_evidence_environment
+
+
+def test_evidence_environment_removes_runner_credentials(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("GITEA_TOKEN", "secret")
+    monkeypatch.setenv("CODEX_HOME", "credential-store")
+    monkeypatch.setenv("COMPANY_SECRET", "secret")
+    monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "configurations.ci")
+
+    environment = safe_evidence_environment(tmp_path)
+
+    assert "GITEA_TOKEN" not in environment
+    assert "CODEX_HOME" not in environment
+    assert "COMPANY_SECRET" not in environment
+    assert environment["DJANGO_SETTINGS_MODULE"] == "configurations.ci"
+    assert environment["USERPROFILE"] == str(tmp_path)
 
 
 def test_collects_checks_for_exact_head(monkeypatch, tmp_path: Path) -> None:

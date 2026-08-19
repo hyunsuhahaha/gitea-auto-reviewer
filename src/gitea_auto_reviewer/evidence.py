@@ -3,14 +3,22 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import subprocess
+import tempfile
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from .git_context import validate_sha
 
 STATUSES = {"pass", "fail", "error", "not_run"}
+SAFE_ENVIRONMENT_NAMES = {
+    "CI", "COMSPEC", "DJANGO_SETTINGS_MODULE", "LANG", "LC_ALL", "NOX_MES_CI",
+    "PATH", "PATHEXT", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
+    "PYTHONIOENCODING", "PYTHONPATH", "PYTHONUTF8", "SSL_CERT_DIR", "SSL_CERT_FILE",
+    "SYSTEMROOT", "TEMP", "TMP", "WINDIR",
+}
 
 
 @dataclass(frozen=True)
@@ -78,37 +86,46 @@ class Evidence:
 
 def collect_evidence(repository: Path, head_sha: str, python: str = "python", timeout: int = 900) -> Evidence:
     head_sha = validate_sha(head_sha)
-    try:
-        actual_head = subprocess.run(
-            ["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=30, check=True,
-        ).stdout.strip().lower()
-    except (OSError, subprocess.SubprocessError) as exc:
-        raise RuntimeError("could not verify evidence checkout HEAD") from exc
-    if actual_head != head_sha:
-        raise ValueError("evidence checkout does not match the supplied PR head SHA")
-    manage_py = repository / "manage.py"
-    if not manage_py.is_file():
-        raise ValueError("manage.py was not found in the repository root")
-    return Evidence(
-        head_sha,
-        _run([python, "manage.py", "check"], repository, timeout),
-        _run_migration([python, "manage.py", "makemigrations", "--check", "--dry-run"], repository, timeout),
-        _run_pytest([python, "-m", "pytest", "-q", "-p", "no:cacheprovider"], repository, timeout),
-    )
+    with tempfile.TemporaryDirectory(prefix="gitea-evidence-") as home:
+        environment = safe_evidence_environment(Path(home))
+        try:
+            actual_head = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True, text=True,
+                encoding="utf-8", errors="replace", timeout=30, check=True, env=environment,
+            ).stdout.strip().lower()
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise RuntimeError("could not verify evidence checkout HEAD") from exc
+        if actual_head != head_sha:
+            raise ValueError("evidence checkout does not match the supplied PR head SHA")
+        if not (repository / "manage.py").is_file():
+            raise ValueError("manage.py was not found in the repository root")
+        return Evidence(
+            head_sha,
+            _run([python, "manage.py", "check"], repository, timeout, environment),
+            _run_migration([python, "manage.py", "makemigrations", "--check", "--dry-run"], repository, timeout, environment),
+            _run_pytest([python, "-m", "pytest", "-q", "-p", "no:cacheprovider"], repository, timeout, environment),
+        )
 
 
-def _run(command: list[str], repository: Path, timeout: int) -> Check:
+def safe_evidence_environment(home: Path) -> dict[str, str]:
+    allowed = {name.upper() for name in SAFE_ENVIRONMENT_NAMES}
+    environment = {name: value for name, value in os.environ.items() if name.upper() in allowed}
+    environment.update({name: str(home) for name in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")})
+    return environment
+
+
+def _run(command: list[str], repository: Path, timeout: int, environment: dict[str, str]) -> Check:
     try:
         result = subprocess.run(command, cwd=repository, capture_output=True, text=True,
-                                encoding="utf-8", errors="replace", timeout=timeout, check=False)
+                                encoding="utf-8", errors="replace", timeout=timeout, check=False,
+                                env=environment)
     except (OSError, subprocess.TimeoutExpired) as exc:
         return Check("error", type(exc).__name__)
     return Check("pass" if result.returncode == 0 else "fail", _summary(result.stdout, result.stderr))
 
 
-def _run_pytest(command: list[str], repository: Path, timeout: int) -> Check:
-    check = _run(command, repository, timeout)
+def _run_pytest(command: list[str], repository: Path, timeout: int, environment: dict[str, str]) -> Check:
+    check = _run(command, repository, timeout, environment)
     counts: dict[str, int] = {}
     for count, name in re.findall(r"(\d+)\s+(passed|failed|error|errors|skipped|xfailed|xpassed)", check.summary):
         counts[name] = counts.get(name, 0) + int(count)
@@ -117,8 +134,8 @@ def _run_pytest(command: list[str], repository: Path, timeout: int) -> Check:
     return Check(check.status, check.summary, passed if total else None, total or None)
 
 
-def _run_migration(command: list[str], repository: Path, timeout: int) -> Check:
-    check = _run(command, repository, timeout)
+def _run_migration(command: list[str], repository: Path, timeout: int, environment: dict[str, str]) -> Check:
+    check = _run(command, repository, timeout, environment)
     if check.status == "fail" and "Migrations for" not in check.summary:
         return Check("error", check.summary)
     return check

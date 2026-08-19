@@ -13,7 +13,7 @@ push commits, or modify branch protection.
 ## v0.1 flow
 
 ```text
-PR head ── isolated, credential-free CI sandbox
+PR head ── existing Windows test runner
               ├─ Django check
               ├─ migration check
               ├─ pytest
@@ -41,10 +41,10 @@ pull_request_target on trusted base workflow
                  create/update PR comment
 ```
 
-The three CLI stages are intentionally separate:
+The three CLI processes run sequentially in one Windows job:
 
 ```bash
-gitea-auto-reviewer evidence ... # isolated PR execution, no Codex/Gitea credential
+gitea-auto-reviewer evidence ... # trusted internal PR execution, sanitized child environment
 gitea-auto-reviewer review ...   # Codex session, consumes evidence, no Gitea credential
 gitea-auto-reviewer comment ...  # Gitea credential, never invokes Codex or PR code
 ```
@@ -76,12 +76,14 @@ v0.1 intentionally supports only:
 - a normal Markdown timeline comment;
 - a maximum diff size of 1 MB by default.
 
-Only the isolated evidence job executes PR code. Codex is never asked to run
-tests, builds, migrations, package managers, or project scripts. The evidence
-job must use an ephemeral, non-privileged sandbox with no secrets or network.
-Only the PR checkout and evidence output directory are mounted; no credential,
-Docker socket, or unrelated host path enters the sandbox. It does not auto-fix code and a finding never changes the workflow
-result solely because of its severity.
+Only the evidence process executes PR code. Codex is never asked to run tests,
+builds, migrations, package managers, or project scripts. The Windows Server
+trial reuses the existing test deployment runner. Check subprocesses receive an
+allowlisted environment and a temporary HOME, so step-scoped Gitea credentials,
+`CODEX_HOME`, and unrelated runner secrets are not inherited. This is process
+separation, not account or VM isolation, so it is restricted to trusted internal
+same-repository PRs. A finding never changes the workflow result solely because
+of its severity.
 
 Do not use this version for fork PRs or untrusted public repositories. A
 self-hosted runner is privileged infrastructure; Gitea itself recommends that
@@ -92,13 +94,13 @@ runners and repositories trust each other.
 - Python 3.11 or newer
 - Git
 - Codex CLI with `--output-schema` support
-- A persistent self-hosted Gitea Actions runner
+- An existing Windows Gitea runner with the `self-hosted` label
 - A ChatGPT account entitled to use Codex
 - A Gitea token that can read and write PR/issue comments
 
 ## Install on the runner
 
-Install one audited release as the operating-system account used by the runner.
+Install one audited release under the existing runner service account.
 Do this during runner provisioning, not from a pull request:
 
 ```bash
@@ -118,8 +120,7 @@ are executable code.
 
 ## Authenticate Codex without an API key
 
-Sign in once, interactively, as the same OS account that runs the persistent
-runner:
+Sign in once as the OS account behind the existing Windows runner:
 
 ```bash
 codex login
@@ -144,7 +145,8 @@ to run `codex login` again. See the official
    `AI_REVIEW_GITEA_TOKEN`.
 4. Copy [`.gitea/workflows/ai-review.yml`](.gitea/workflows/ai-review.yml) into
    the reviewed repository's trusted base branch.
-5. Ensure `gitea-auto-reviewer` and `codex` are available on the runner `PATH`.
+5. Ensure `gitea-auto-reviewer` and `codex` are on the existing runner account's
+   PATH and that the runner has the `self-hosted` label.
 
 The example uses `pull_request_target` so the workflow definition comes from
    the trusted base branch. It checks that the PR comes from the same repository,
@@ -152,13 +154,13 @@ The example uses `pull_request_target` so the workflow definition comes from
 
 ## CLI
 
-Collect deterministic evidence inside the isolated PR execution sandbox:
+Collect deterministic evidence on the credential-free Windows evidence runner:
 
 ```bash
-gitea-auto-reviewer evidence \
-  --head-sha 2222222222222222222222222222222222222222 \
-  --repo-dir /workspace/payments \
-  --output /artifacts/evidence.json
+gitea-auto-reviewer evidence `
+  --head-sha 2222222222222222222222222222222222222222 `
+  --repo-dir C:\runner\work\payments `
+  --output C:\runner\temp\evidence.json
 ```
 
 This runs `python manage.py check`, `python manage.py makemigrations --check

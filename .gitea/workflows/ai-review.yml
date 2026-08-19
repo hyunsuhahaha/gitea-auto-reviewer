@@ -4,118 +4,79 @@ on:
   pull_request_target:
     types: [opened, reopened, synchronize]
 
-# The workflow is loaded from the trusted base branch. It never runs PR code.
+# Windows Server trial profile for trusted, same-repository PRs only.
 permissions:
   contents: read
   issues: write
 
+defaults:
+  run:
+    shell: powershell
+
 jobs:
-  evidence:
+  review:
     if: ${{ gitea.event.pull_request.head.repo.full_name == gitea.repository }}
-    # This label must point to an ephemeral runner dedicated to untrusted PR execution.
-    runs-on: [self-hosted, isolated-pr-ci]
-    permissions:
-      contents: read
+    runs-on: self-hosted
     steps:
       - name: Check out exact PR head
         uses: actions/checkout@v4
         with:
           ref: ${{ gitea.event.pull_request.head.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Collect deterministic evidence
-        env:
-          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
-          EVIDENCE_FILE: ${{ runner.temp }}/gitea-auto-review-evidence.json
-        # Trusted orchestration starts the sandbox. PR code never receives the
-        # Docker socket, host credentials, or network. Replace the image with a
-        # pinned internal image; never build it from this PR.
-        run: |
-          docker run --rm \
-            --network none \
-            --cap-drop ALL \
-            --security-opt no-new-privileges \
-            --pids-limit 512 \
-            --memory 2g \
-            --read-only \
-            --tmpfs /tmp:rw,noexec,nosuid,size=512m \
-            --mount "type=bind,src=$PWD,dst=/workspace" \
-            --mount "type=bind,src=${{ runner.temp }},dst=/artifacts" \
-            --workdir /workspace \
-            registry.example.com/ci/django-evidence:2026-08-19 \
-            gitea-auto-reviewer evidence \
-            --head-sha "$HEAD_SHA" \
-            --output /artifacts/gitea-auto-review-evidence.json
-
-      - name: Upload evidence bound to head SHA
-        uses: actions/upload-artifact@v4
-        with:
-          name: gitea-auto-review-evidence-${{ gitea.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}/gitea-auto-review-evidence.json
-          retention-days: 1
-
-  review:
-    needs: evidence
-    if: ${{ gitea.event.pull_request.head.repo.full_name == gitea.repository }}
-    runs-on: self-hosted
-    steps:
-      - name: Download deterministic evidence
-        uses: actions/download-artifact@v4
-        with:
-          name: gitea-auto-review-evidence-${{ gitea.event.pull_request.head.sha }}
-          path: ${{ runner.temp }}
-
-      # pull_request_target keeps this workflow definition on the trusted base branch.
-      # The checkout below is untrusted PR code and is exposed only for read-only inspection.
-      - name: Check out PR head for read-only inspection
-        uses: actions/checkout@v4
-        with:
-          ref: ${{ gitea.event.pull_request.head.sha }}
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Fetch base commit as data
         env:
           BASE_SHA: ${{ gitea.event.pull_request.base.sha }}
-        run: git fetch --no-tags origin "$BASE_SHA"
+        run: git fetch --no-tags origin $env:BASE_SHA
+
+      # This executes trusted internal PR code. The CLI gives child processes a
+      # temporary HOME and removes Gitea, Codex, and unrelated runner secrets.
+      - name: Collect deterministic evidence
+        env:
+          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          EVIDENCE_FILE: ${{ runner.temp }}\gitea-auto-review-evidence.json
+        run: |
+          gitea-auto-reviewer evidence `
+            --head-sha "$env:HEAD_SHA" `
+            --output "$env:EVIDENCE_FILE"
 
       - name: Generate read-only Codex review
         env:
-          # Defense in depth: the wrapper also passes an allowlisted environment to Codex.
           GITEA_TOKEN: ""
-          REVIEW_FILE: ${{ runner.temp }}/gitea-auto-review.json
+          REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review.json
+          EVIDENCE_FILE: ${{ runner.temp }}\gitea-auto-review-evidence.json
           REPOSITORY: ${{ gitea.repository }}
           PR_NUMBER: ${{ gitea.event.pull_request.number }}
           PR_TITLE: ${{ gitea.event.pull_request.title }}
           BASE_SHA: ${{ gitea.event.pull_request.base.sha }}
           HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
           HEAD_REPOSITORY: ${{ gitea.event.pull_request.head.repo.full_name }}
-          EVIDENCE_FILE: ${{ runner.temp }}/gitea-auto-review-evidence.json
-        run: >-
-          gitea-auto-reviewer review
-          --repository "$REPOSITORY"
-          --head-repository "$HEAD_REPOSITORY"
-          --pr "$PR_NUMBER"
-          --pr-title "$PR_TITLE"
-          --base-sha "$BASE_SHA"
-          --head-sha "$HEAD_SHA"
-          --evidence-file "$EVIDENCE_FILE"
-          --output "$REVIEW_FILE"
+        run: |
+          gitea-auto-reviewer review `
+            --repository "$env:REPOSITORY" `
+            --head-repository "$env:HEAD_REPOSITORY" `
+            --pr "$env:PR_NUMBER" `
+            --pr-title "$env:PR_TITLE" `
+            --base-sha "$env:BASE_SHA" `
+            --head-sha "$env:HEAD_SHA" `
+            --evidence-file "$env:EVIDENCE_FILE" `
+            --output "$env:REVIEW_FILE"
 
       - name: Post or update PR comment
         env:
           GITEA_REVIEW_TOKEN: ${{ secrets.AI_REVIEW_GITEA_TOKEN }}
-          REVIEW_FILE: ${{ runner.temp }}/gitea-auto-review.json
+          REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review.json
           GITEA_API_URL: ${{ gitea.api_url }}
           REPOSITORY: ${{ gitea.repository }}
           PR_NUMBER: ${{ gitea.event.pull_request.number }}
           PR_TITLE: ${{ gitea.event.pull_request.title }}
           HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
-        run: >-
-          gitea-auto-reviewer comment
-          --gitea-url "$GITEA_API_URL"
-          --repository "$REPOSITORY"
-          --pr "$PR_NUMBER"
-          --pr-title "$PR_TITLE"
-          --head-sha "$HEAD_SHA"
-          --review-file "$REVIEW_FILE"
+        run: |
+          gitea-auto-reviewer comment `
+            --gitea-url "$env:GITEA_API_URL" `
+            --repository "$env:REPOSITORY" `
+            --pr "$env:PR_NUMBER" `
+            --pr-title "$env:PR_TITLE" `
+            --head-sha "$env:HEAD_SHA" `
+            --review-file "$env:REVIEW_FILE"
