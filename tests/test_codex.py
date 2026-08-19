@@ -2,6 +2,8 @@ import json
 from pathlib import Path
 from subprocess import CompletedProcess
 
+import pytest
+
 from gitea_auto_reviewer.codex import run_codex_review
 
 
@@ -51,3 +53,13 @@ def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: P
     assert "--ephemeral" in captured["command"]
     assert "GITEA_TOKEN" not in captured["env"]
     assert "COMPANY_SECRET" not in captured["env"]
+
+
+def test_codex_failure_includes_stderr(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setattr(
+        "gitea_auto_reviewer.codex.subprocess.run",
+        lambda command, **kwargs: CompletedProcess(command, 1, "", "invalid_json_schema"),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid_json_schema"):
+        run_codex_review("prompt", tmp_path, temp_root=tmp_path)

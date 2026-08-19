@@ -2,7 +2,13 @@ import json
 
 import pytest
 
-from gitea_auto_reviewer.review import Review, render_markdown, validate_grounding, validate_verification
+from gitea_auto_reviewer.review import (
+    REVIEW_JSON_SCHEMA,
+    Review,
+    render_markdown,
+    validate_grounding,
+    validate_verification,
+)
 
 
 def impact_payload() -> dict[str, object]:
@@ -30,6 +36,20 @@ def impact_payload() -> dict[str, object]:
             "policy_quote": None,
         }],
     }
+
+
+def test_codex_schema_does_not_mix_ref_with_other_keywords() -> None:
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            if "$ref" in value:
+                assert set(value) == {"$ref"}
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(REVIEW_JSON_SCHEMA)
 
 
 def test_review_renders_compact_change_impact_summary() -> None:

@@ -67,6 +67,12 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
             "maxItems": 5,
             "items": {"type": "string", "pattern": "^.+:[1-9][0-9]*$", "maxLength": 300},
         },
+        "requiredReferences": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 5,
+            "items": {"type": "string", "pattern": "^.+:[1-9][0-9]*$", "maxLength": 300},
+        },
         "findings": {
             "type": "array",
             "maxItems": 5,
@@ -80,7 +86,7 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
                     "impact": {"type": "string", "minLength": 1, "maxLength": 500},
                     "change": {"type": "string", "minLength": 1, "maxLength": 500},
                     "expected_state": {"type": "string", "minLength": 1, "maxLength": 500},
-                    "evidence": {"$ref": "#/$defs/references", "minItems": 1},
+                    "evidence": {"$ref": "#/$defs/requiredReferences"},
                     "policy_quote": {"type": ["string", "null"], "maxLength": 500},
                 },
             },

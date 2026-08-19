@@ -108,7 +108,9 @@ def run_codex_review(
         except FileNotFoundError as exc:
             raise RuntimeError(f"Codex CLI was not found: {codex_binary}") from exc
         if result.returncode != 0:
-            raise RuntimeError(f"Codex review failed with exit code {result.returncode}")
+            detail = " ".join(result.stderr.split())[-2000:]
+            suffix = f": {detail}" if detail else ""
+            raise RuntimeError(f"Codex review failed with exit code {result.returncode}{suffix}")
         try:
             raw = output_path.read_text(encoding="utf-8")
         except FileNotFoundError as exc:
