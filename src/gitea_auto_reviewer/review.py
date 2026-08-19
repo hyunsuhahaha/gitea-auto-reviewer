@@ -368,8 +368,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         *(_finding_section(review.findings) if review.findings else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
-    return (f"{marker}\n\n```text\n" + "\n".join(lines).rstrip() +
-            "\n```\n\n이 리뷰가 유용했다면 👍, 노이즈였다면 👎 반응을 남겨주세요.")
+    return f"{marker}\n\n```text\n" + "\n".join(lines).rstrip() + "\n```"
 
 
 def _finding_section(findings: tuple[Finding, ...]) -> list[str]:

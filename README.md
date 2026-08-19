@@ -94,7 +94,7 @@ runners and repositories trust each other.
 - Python 3.11 or newer
 - Git
 - Codex CLI with `--output-schema` support
-- An existing Windows Gitea runner with the `self-hosted` label
+- A dedicated Windows Gitea runner with the `ai-review-windows` label
 - A ChatGPT account entitled to use Codex
 - A Gitea token that can read and write PR/issue comments
 
@@ -113,6 +113,7 @@ For development before a package is published:
 git clone https://github.com/hyunsuhahaha/gitea-auto-reviewer.git
 cd gitea-auto-reviewer
 python -m pip install .
+python -m pip install uv
 ```
 
 Do not run `pip install .` against an untrusted PR checkout. Python build hooks
@@ -145,12 +146,16 @@ to run `codex login` again. See the official
    `AI_REVIEW_GITEA_TOKEN`.
 4. Copy [`.gitea/workflows/ai-review.yml`](.gitea/workflows/ai-review.yml) into
    the reviewed repository's trusted base branch.
-5. Ensure `gitea-auto-reviewer` and `codex` are on the existing runner account's
-   PATH and that the runner has the `self-hosted` label.
+5. Install `uv` in the persistent reviewer virtual environment. Every PR still
+   gets a fresh `.venv-ci`; uv reuses its Windows package cache to avoid slow
+   repeated pip installations.
+6. Ensure `gitea-auto-reviewer` and `codex` are available to the dedicated
+   runner account and that the runner has the `ai-review-windows` label.
 
 The example uses `pull_request_target` so the workflow definition comes from
    the trusted base branch. It checks that the PR comes from the same repository,
-   checks out the PR head for inspection, and never invokes code from that checkout.
+   checks out the PR head, runs deterministic checks in a fresh CI environment,
+   and keeps the later Codex process read-only and credential-free.
 
 ## CLI
 
@@ -167,6 +172,10 @@ This runs `python manage.py check`, `python manage.py makemigrations --check
 --dry-run`, and `python -m pytest -q -p no:cacheprovider`. It verifies that the checkout's actual
 `HEAD` equals `--head-sha` before executing anything and records that SHA in the
 evidence document.
+
+The first Codex pass uses high reasoning effort for repository and boundary
+analysis. The independent rejection pass uses low effort because it only
+disproves or retains existing findings.
 
 Generate a structured review:
 

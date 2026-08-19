@@ -107,3 +107,40 @@ def test_codex_applies_deterministic_fields_before_validation(monkeypatch, tmp_p
 
     assert review.changed_files == 1
     assert review.tests.status == "not_run"
+
+
+def test_codex_uses_requested_reasoning_effort(monkeypatch, tmp_path: Path) -> None:
+    captured = {}
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        output = Path(command[command.index("--output-last-message") + 1])
+        output.write_text(json.dumps({
+            "changed_files": 1,
+            "changed_file_paths": ["settings.py"],
+            "database_change": "not_detected",
+            "django_check": "not_run",
+            "migration": "not_run",
+            "api_contract": "not_detected",
+            "external_integration": "not_detected",
+            "external_integration_reason": None,
+            "external_integration_evidence": [],
+            "tests": {"status": "not_run", "passed": None, "total": None},
+            "risk": "low",
+            "risk_confidence": "high",
+            "risk_evidence": [],
+            "key_changes": ["설정값 변경"],
+            "findings": [],
+        }), encoding="utf-8")
+        return CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("gitea_auto_reviewer.codex.subprocess.run", fake_run)
+
+    run_codex_review("prompt", tmp_path, temp_root=tmp_path, reasoning_effort="low")
+
+    assert captured["command"][captured["command"].index("--config") + 1] == 'model_reasoning_effort="low"'
+
+
+def test_codex_rejects_unknown_reasoning_effort(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="reasoning_effort"):
+        run_codex_review("prompt", tmp_path, temp_root=tmp_path, reasoning_effort="none")

@@ -106,6 +106,7 @@ def review_command(arguments: argparse.Namespace) -> None:
         arguments.repo_dir.resolve(),
         arguments.codex_binary,
         fixed_fields=fixed_fields,
+        reasoning_effort="low",
     )
     validate_verification(draft, result)
     result = replace(

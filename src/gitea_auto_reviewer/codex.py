@@ -72,7 +72,10 @@ def run_codex_review(
     codex_binary: str = "codex",
     temp_root: Path | None = None,
     fixed_fields: dict[str, Any] | None = None,
+    reasoning_effort: str = "high",
 ) -> Review:
+    if reasoning_effort not in {"low", "medium", "high"}:
+        raise ValueError("reasoning_effort must be low, medium, or high")
     with tempfile.TemporaryDirectory(prefix="gitea-review-", dir=temp_root) as directory:
         workdir = Path(directory)
         schema_path = workdir / "review-schema.json"
@@ -83,7 +86,7 @@ def run_codex_review(
             "exec",
             "-",
             "--config",
-            'model_reasoning_effort="high"',
+            f'model_reasoning_effort="{reasoning_effort}"',
             "--sandbox",
             "read-only",
             "--ephemeral",

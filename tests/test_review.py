@@ -79,7 +79,8 @@ def test_review_renders_compact_change_impact_summary() -> None:
     assert "수정: remark를 전달하거나 기본값을 정의" in rendered
     assert "완료: 기존 생성 경로가 정상 동작" in rendered
     assert "└ product/models.py:31" in rendered
-    assert "유용했다면 👍, 노이즈였다면 👎" in rendered
+    assert "유용했다면" not in rendered
+    assert "노이즈였다면" not in rendered
     assert "Critical" not in rendered
 
 
