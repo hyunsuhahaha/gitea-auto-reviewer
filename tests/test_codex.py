@@ -35,6 +35,7 @@ def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: P
                     "risk_evidence": [],
                     "key_changes": ["설정값 변경"],
                     "findings": [],
+                    "affected_files": [],
                 }
             ),
             encoding="utf-8",
@@ -94,6 +95,7 @@ def test_codex_applies_deterministic_fields_before_validation(monkeypatch, tmp_p
             "risk_evidence": [],
             "key_changes": ["설정값 변경"],
             "findings": [],
+            "affected_files": [],
         }
         output.write_text(json.dumps(payload), encoding="utf-8")
         return CompletedProcess(command, 0, "", "")
@@ -142,6 +144,7 @@ def test_codex_uses_requested_reasoning_effort(monkeypatch, tmp_path: Path) -> N
             "risk_evidence": [],
             "key_changes": ["설정값 변경"],
             "findings": [],
+            "affected_files": [],
         }), encoding="utf-8")
         return CompletedProcess(command, 0, "", "")
 

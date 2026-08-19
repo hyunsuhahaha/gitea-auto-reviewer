@@ -51,6 +51,11 @@ def impact_payload() -> dict[str, object]:
             "evidence": ["product/models.py:31", "product/services.py:18"],
             "policy_quote": None,
         }],
+        "affected_files": [{
+            "path": "app/views/product_admin.py",
+            "reason": "Product 생성 호출자가 새 필드의 영향을 받음",
+            "evidence": ["app/views/product_admin.py:52"],
+        }],
     }
 
 
@@ -91,10 +96,14 @@ def test_review_renders_compact_change_impact_summary() -> None:
     assert "유용했다면" not in rendered
     assert "노이즈였다면" not in rendered
     assert "Critical" not in rendered
+    assert rendered.rfind("영향 파일") > rendered.rfind("주의")
+    assert "• app/views/product_admin.py" in rendered
+    assert "Product 생성 호출자가 새 필드의 영향을 받음 — app/views/product_admin.py:52" in rendered
 
 
 def test_not_run_is_explicit() -> None:
     payload = impact_payload()
+    payload["affected_files"] = []
     payload["tests"] = {"status": "not_run", "passed": None, "total": None}
 
     rendered = render_markdown(Review.from_json(json.dumps(payload)), 1, "b" * 40, "변경")
@@ -164,6 +173,7 @@ def test_grounding_checks_files_lines_and_policy_quotes(tmp_path) -> None:
     source.parent.mkdir()
     source.write_text("one\ntwo\n", encoding="utf-8")
     payload = impact_payload()
+    payload["affected_files"] = []
     payload["risk_evidence"] = ["product/models.py:2"]
     payload.update(database_change="not_detected", database_change_details=[], data_change="not_detected", data_change_details=[])
     payload.update(
@@ -216,3 +226,12 @@ def test_verifier_may_only_remove_verbatim_findings() -> None:
     data_downgraded = impact_payload()
     data_downgraded.update(data_change="not_detected", data_change_details=[])
     validate_verification(draft, Review.from_json(json.dumps(data_downgraded)))
+
+    affected_removed = impact_payload()
+    affected_removed["affected_files"] = []
+    validate_verification(draft, Review.from_json(json.dumps(affected_removed)))
+
+    affected_rewritten = impact_payload()
+    affected_rewritten["affected_files"][0]["reason"] = "검증기가 새로 쓴 영향"
+    with pytest.raises(ValueError, match="affected file"):
+        validate_verification(draft, Review.from_json(json.dumps(affected_rewritten)))

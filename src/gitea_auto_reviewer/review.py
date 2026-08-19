@@ -27,6 +27,7 @@ FIELDS = {
     "risk_evidence",
     "key_changes",
     "findings",
+    "affected_files",
 }
 
 REVIEW_JSON_SCHEMA: dict[str, Any] = {
@@ -66,6 +67,7 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
         "risk_evidence": {"$ref": "#/$defs/references"},
         "key_changes": {"$ref": "#/$defs/requiredItems"},
         "findings": {"$ref": "#/$defs/findings"},
+        "affected_files": {"$ref": "#/$defs/affectedFiles"},
     },
     "$defs": {
         "requiredItems": {
@@ -111,6 +113,20 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
                     "impact": {"type": "string", "minLength": 1, "maxLength": 500},
                     "evidence": {"$ref": "#/$defs/requiredReferences"},
                     "policy_quote": {"type": ["string", "null"], "maxLength": 500},
+                },
+            },
+        },
+        "affectedFiles": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["path", "reason", "evidence"],
+                "properties": {
+                    "path": {"type": "string", "minLength": 1, "maxLength": 500},
+                    "reason": {"type": "string", "minLength": 1, "maxLength": 500},
+                    "evidence": {"$ref": "#/$defs/requiredReferences"},
                 },
             },
         },
@@ -177,6 +193,20 @@ class ImpactDetail:
 
 
 @dataclass(frozen=True)
+class AffectedFile:
+    path: str
+    reason: str
+    evidence: tuple[str, ...]
+
+    @classmethod
+    def from_value(cls, value: object) -> AffectedFile:
+        if not isinstance(value, dict) or set(value) != {"path", "reason", "evidence"}:
+            raise ValueError("affected file does not match the required schema")
+        path = _path(value["path"], "affected file path")
+        return cls(path, _text(value["reason"], "affected file reason"), _references(value["evidence"], True))
+
+
+@dataclass(frozen=True)
 class Review:
     changed_files: int
     changed_file_paths: tuple[str, ...]
@@ -196,6 +226,7 @@ class Review:
     risk_evidence: tuple[str, ...]
     key_changes: tuple[str, ...]
     findings: tuple[Finding, ...]
+    affected_files: tuple[AffectedFile, ...]
 
     @classmethod
     def from_json(cls, raw: str) -> Review:
@@ -258,11 +289,12 @@ class Review:
             risk_evidence=risk_evidence,
             key_changes=_items(value["key_changes"], "key_changes", required=True),
             findings=_findings(value["findings"]),
+            affected_files=_affected_files(value["affected_files"], changed_file_paths),
         )
 
     def to_json(self) -> str:
         value = asdict(self)
-        for name in ("changed_file_paths", "external_integration_evidence", "risk_evidence", "key_changes", "findings"):
+        for name in ("changed_file_paths", "external_integration_evidence", "risk_evidence", "key_changes", "findings", "affected_files"):
             value[name] = list(value[name])
         return json.dumps(value, ensure_ascii=False, indent=2)
 
@@ -276,13 +308,17 @@ def _paths(value: object) -> tuple[str, ...]:
         raise ValueError("changed_file_paths must not be empty")
     paths: list[str] = []
     for item in value:
-        if not isinstance(item, str) or not item or len(item) > 500 or "\n" in item:
-            raise ValueError("invalid changed file path")
-        path = PurePosixPath(item)
-        if path.is_absolute() or ".." in path.parts:
-            raise ValueError("invalid changed file path")
-        paths.append(item)
+        paths.append(_path(item, "changed file path"))
     return tuple(paths)
+
+
+def _path(value: object, name: str) -> str:
+    if not isinstance(value, str) or not value or len(value) > 500 or "\n" in value:
+        raise ValueError(f"invalid {name}")
+    path = PurePosixPath(value)
+    if path.is_absolute() or ".." in path.parts:
+        raise ValueError(f"invalid {name}")
+    return value
 
 
 def _enum(value: dict[str, object], name: str, allowed: set[str]) -> None:
@@ -309,6 +345,18 @@ def _impact_details(value: object) -> tuple[ImpactDetail, ...]:
     if not isinstance(value, list) or len(value) > 5:
         raise ValueError("impact details must contain 0-5 items")
     return tuple(ImpactDetail.from_value(item) for item in value)
+
+
+def _affected_files(value: object, changed_paths: tuple[str, ...]) -> tuple[AffectedFile, ...]:
+    if not isinstance(value, list) or len(value) > 5:
+        raise ValueError("affected_files must contain 0-5 items")
+    items = tuple(AffectedFile.from_value(item) for item in value)
+    paths = tuple(item.path for item in items)
+    if len(set(paths)) != len(paths) or any(path in changed_paths for path in paths):
+        raise ValueError("affected_files must be unique and exclude changed files")
+    if any(not any(ref.rpartition(":")[0] == item.path for ref in item.evidence) for item in items):
+        raise ValueError("each affected file requires evidence from that file")
+    return items
 
 
 def _text(value: object, name: str) -> str:
@@ -340,6 +388,7 @@ def validate_grounding(review: Review, repository: Path, policy: str) -> None:
         *(ref for item in review.data_change_details for ref in item.evidence),
         *review.risk_evidence,
         *(ref for item in review.findings for ref in item.evidence),
+        *(ref for item in review.affected_files for ref in item.evidence),
     ):
         relative, _, line_text = reference.rpartition(":")
         candidate = (root / relative).resolve()
@@ -381,6 +430,8 @@ def validate_verification(draft: Review, verified: Review) -> None:
     verified_data = (verified.data_change, verified.data_change_details)
     if verified_data != draft_data and verified_data != ("not_detected", ()):
         raise ValueError("verification introduced or rewrote data-processing impact")
+    if any(item not in draft.affected_files for item in verified.affected_files):
+        raise ValueError("verification introduced or rewrote an affected file")
 
 
 def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str) -> str:
@@ -429,6 +480,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         *[f"• {item}" for item in review.key_changes],
         "",
         *(_finding_section(review.findings) if review.findings else []),
+        *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
     return f"{marker}\n\n```text\n" + "\n".join(lines).rstrip() + "\n```"
@@ -443,6 +495,14 @@ def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
             lines.append(f'  규칙: "{finding.policy_quote}"')
         lines.extend(f"  └ {reference}" for reference in finding.evidence)
     return ["", *lines]
+
+
+def _affected_file_section(files: tuple[AffectedFile, ...]) -> list[str]:
+    lines = ["", "영향 파일"]
+    for item in files:
+        lines.append(f"• {item.path}")
+        lines.append(f"  └ {item.reason} — {', '.join(item.evidence)}")
+    return lines
 
 
 def _row(label: str, value: str) -> str:

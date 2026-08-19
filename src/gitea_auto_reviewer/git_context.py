@@ -139,6 +139,7 @@ Output rules:
 - Set tests from the CI pytest status and counts. Use null counts for error or not_run.
 - The program enforces these deterministic fields after generation; never reinterpret or contradict them.
 - Keep each list to the fewest useful items, maximum five.
+- affected_files is the final report section. Populate it only with unchanged repository files that GitNexus context, impact, or trace identifies as meaningful direct callers, callees, or affected-process participants. Exclude changed_file_paths, generic utilities, import-only links, and speculative relationships. Give each path one concise operational reason and verified file:line evidence. Use at most five items and an empty list when none qualify.
 
 <PROJECT_POLICY source="base:{context.base_sha}:AI_REVIEW.md">
 {context.policy}
@@ -168,6 +169,7 @@ This is an independent rejection pass, not a request for more findings.
 - Retain the external-integration status, reason, and evidence verbatim or downgrade all three to not_detected, null, and an empty list. Do not rewrite them.
 - Retain database_change and database_change_details verbatim or downgrade them to not_detected and an empty list. Do not rewrite them.
 - Retain data_change and data_change_details verbatim or downgrade them to not_detected and an empty list. Do not rewrite them.
+- Retain affected_files verbatim or remove entries. Do not add or rewrite them.
 - Recalculate risk and confidence after removals. Preserve deterministic CI fields exactly.
 - If none survive, return an empty findings list. Silence is a valid and preferred result.
 

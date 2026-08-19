@@ -285,6 +285,12 @@ API Contract     변경
   영향: 상품 생성이 실패할 수 있음
   └ product/models.py:31
   └ product/services.py:18
+
+영향 파일
+• app/views/product_admin.py
+  └ Product 생성 호출자가 새 필드의 영향을 받음 — app/views/product_admin.py:52
+• scm/product_sync_service.py
+  └ SCM 동기화 과정에서 변경된 Product 생성 경로를 호출함 — scm/product_sync_service.py:74
 ```
 
 The program validates the structured result before posting it. The changed-file
@@ -310,6 +316,10 @@ trace newly admitted states through callers before assigning risk.
 Deterministic CI facts take precedence. A
 second independent read-only Codex pass tries to disprove every draft finding;
 it may only retain a finding verbatim or delete it, never add or rewrite one.
+The final `영향 파일` section lists at most five unchanged files with a
+GitNexus-confirmed caller, callee, or affected-process relationship. Changed
+files, generic utilities, import-only links, and unverified relationships are
+excluded. Every entry includes one reason and a verified `file:line` reference.
 
 ## Project policy
 
