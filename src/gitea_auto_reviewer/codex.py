@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from typing import Any
 
 from .review import REVIEW_JSON_SCHEMA, Review
 
@@ -70,6 +71,7 @@ def run_codex_review(
     repository: Path,
     codex_binary: str = "codex",
     temp_root: Path | None = None,
+    fixed_fields: dict[str, Any] | None = None,
 ) -> Review:
     with tempfile.TemporaryDirectory(prefix="gitea-review-", dir=temp_root) as directory:
         workdir = Path(directory)
@@ -115,4 +117,8 @@ def run_codex_review(
             raw = output_path.read_text(encoding="utf-8")
         except FileNotFoundError as exc:
             raise RuntimeError("Codex did not produce a review result") from exc
+        if fixed_fields:
+            value = json.loads(raw)
+            value.update(fixed_fields)
+            raw = json.dumps(value)
         return Review.from_json(raw)

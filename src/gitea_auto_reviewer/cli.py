@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import replace
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from .codex import assert_logged_in, run_codex_review
@@ -86,24 +86,25 @@ def review_command(arguments: argparse.Namespace) -> None:
     assert_logged_in(arguments.codex_binary)
     pr_title = str(_required(arguments.pr_title, "PR title"))
     prompt = build_prompt(context, repository, pr_number, pr_title, evidence.to_json())
+    fixed_fields = {
+        "changed_files": context.changed_files,
+        "django_check": evidence.django_check.status,
+        "migration": {"pass": "no_missing", "fail": "missing", "error": "error", "not_run": "not_run"}[
+            evidence.migration_check.status
+        ],
+        "tests": asdict(_evidence_tests(evidence)),
+    }
     draft = run_codex_review(
         prompt,
         arguments.repo_dir.resolve(),
         arguments.codex_binary,
-    )
-    draft = replace(
-        draft,
-        changed_files=context.changed_files,
-        django_check=evidence.django_check.status,
-        migration={"pass": "no_missing", "fail": "missing", "error": "error", "not_run": "not_run"}[
-            evidence.migration_check.status
-        ],
-        tests=_evidence_tests(evidence),
+        fixed_fields=fixed_fields,
     )
     result = run_codex_review(
         build_verification_prompt(prompt, draft.to_json()),
         arguments.repo_dir.resolve(),
         arguments.codex_binary,
+        fixed_fields=fixed_fields,
     )
     validate_verification(draft, result)
     result = replace(

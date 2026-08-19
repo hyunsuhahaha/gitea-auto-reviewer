@@ -63,3 +63,43 @@ def test_codex_failure_includes_stderr(monkeypatch, tmp_path: Path) -> None:
 
     with pytest.raises(RuntimeError, match="invalid_json_schema"):
         run_codex_review("prompt", tmp_path, temp_root=tmp_path)
+
+
+def test_codex_applies_deterministic_fields_before_validation(monkeypatch, tmp_path: Path) -> None:
+    def fake_run(command, **kwargs):
+        output = Path(command[command.index("--output-last-message") + 1])
+        payload = {
+            "changed_files": 99,
+            "database_change": "not_detected",
+            "django_check": "pass",
+            "migration": "no_missing",
+            "api_contract": "not_detected",
+            "external_integration": "not_detected",
+            "external_integration_reason": None,
+            "external_integration_evidence": [],
+            "tests": {"status": "pass", "passed": None, "total": None},
+            "risk": "low",
+            "risk_confidence": "high",
+            "risk_evidence": [],
+            "key_changes": ["설정값 변경"],
+            "findings": [],
+        }
+        output.write_text(json.dumps(payload), encoding="utf-8")
+        return CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr("gitea_auto_reviewer.codex.subprocess.run", fake_run)
+
+    review = run_codex_review(
+        "prompt",
+        tmp_path,
+        temp_root=tmp_path,
+        fixed_fields={
+            "changed_files": 1,
+            "django_check": "pass",
+            "migration": "no_missing",
+            "tests": {"status": "not_run", "passed": None, "total": None},
+        },
+    )
+
+    assert review.changed_files == 1
+    assert review.tests.status == "not_run"
