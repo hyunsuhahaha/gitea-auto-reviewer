@@ -48,8 +48,6 @@ def impact_payload() -> dict[str, object]:
             "category": "bug",
             "problem": "기존 Product 생성 경로가 remark를 전달하지 않음",
             "impact": "상품 생성이 실패할 수 있음",
-            "change": "remark를 전달하거나 기본값을 정의",
-            "expected_state": "기존 생성 경로가 정상 동작",
             "evidence": ["product/models.py:31", "product/services.py:18"],
             "policy_quote": None,
         }],
@@ -87,8 +85,8 @@ def test_review_renders_compact_change_impact_summary() -> None:
     assert "테스트" in rendered and "147/147 PASS" in rendered
     assert "위험도" in rendered and "🟠 HIGH · 근거 HIGH" in rendered
     assert "주의" in rendered
-    assert "수정: remark를 전달하거나 기본값을 정의" in rendered
-    assert "완료: 기존 생성 경로가 정상 동작" in rendered
+    assert "수정:" not in rendered
+    assert "완료:" not in rendered
     assert "└ product/models.py:31" in rendered
     assert "유용했다면" not in rendered
     assert "노이즈였다면" not in rendered
@@ -177,8 +175,6 @@ def test_grounding_checks_files_lines_and_policy_quotes(tmp_path) -> None:
         "category": "policy",
         "problem": "트랜잭션 규칙 위반",
         "impact": "부분 저장 가능",
-        "change": "atomic 적용",
-        "expected_state": "전체 작업이 원자적으로 저장됨",
         "evidence": ["product/models.py:2"],
         "policy_quote": "쓰기 작업은 atomic이어야 한다.",
     }]

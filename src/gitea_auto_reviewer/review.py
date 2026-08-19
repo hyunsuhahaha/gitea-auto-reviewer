@@ -104,13 +104,11 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
             "items": {
                 "type": "object",
                 "additionalProperties": False,
-                "required": ["category", "problem", "impact", "change", "expected_state", "evidence", "policy_quote"],
+                "required": ["category", "problem", "impact", "evidence", "policy_quote"],
                 "properties": {
-                    "category": {"enum": ["bug", "security", "performance", "policy"]},
+                    "category": {"enum": ["bug", "security", "performance", "dependency", "policy"]},
                     "problem": {"type": "string", "minLength": 1, "maxLength": 500},
                     "impact": {"type": "string", "minLength": 1, "maxLength": 500},
-                    "change": {"type": "string", "minLength": 1, "maxLength": 500},
-                    "expected_state": {"type": "string", "minLength": 1, "maxLength": 500},
                     "evidence": {"$ref": "#/$defs/requiredReferences"},
                     "policy_quote": {"type": ["string", "null"], "maxLength": 500},
                 },
@@ -146,20 +144,18 @@ class Finding:
     category: str
     problem: str
     impact: str
-    change: str
-    expected_state: str
     evidence: tuple[str, ...]
     policy_quote: str | None
 
     @classmethod
     def from_value(cls, value: object) -> Finding:
-        names = {"category", "problem", "impact", "change", "expected_state", "evidence", "policy_quote"}
+        names = {"category", "problem", "impact", "evidence", "policy_quote"}
         if not isinstance(value, dict) or set(value) != names:
             raise ValueError("finding does not match the required schema")
         category = value["category"]
-        if category not in {"bug", "security", "performance", "policy"}:
+        if category not in {"bug", "security", "performance", "dependency", "policy"}:
             raise ValueError("invalid finding category")
-        strings = [_text(value[name], name) for name in ("problem", "impact", "change", "expected_state")]
+        strings = [_text(value[name], name) for name in ("problem", "impact")]
         quote = value["policy_quote"]
         if category == "policy":
             quote = _text(quote, "policy_quote")
@@ -443,8 +439,6 @@ def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
     for finding in findings:
         lines.append(f"• {finding.problem}")
         lines.append(f"  영향: {finding.impact}")
-        lines.append(f"  수정: {finding.change}")
-        lines.append(f"  완료: {finding.expected_state}")
         if finding.policy_quote:
             lines.append(f'  규칙: "{finding.policy_quote}"')
         lines.extend(f"  └ {reference}" for reference in finding.evidence)

@@ -254,8 +254,6 @@ API Contract     변경
 주의
 • 기존 Product 생성 경로가 remark를 전달하지 않음
   영향: 상품 생성이 실패할 수 있음
-  수정: remark를 전달하거나 모델 기본값을 정의
-  완료: remark 없는 기존 경로도 정상적으로 상품을 생성함
   └ product/models.py:31
   └ product/services.py:18
 ```
@@ -271,9 +269,9 @@ runs update the existing comment without a database:
 ```
 
 To reduce confident but low-value commentary, findings disappear when none
-qualify. Only concrete bugs, security issues, performance issues, and explicit
-base-policy violations are allowed. Each finding must include its impact, a
-specific change, the expected state afterward, and real `file:line` locations.
+qualify. Only concrete bugs, security issues, performance issues, dependency
+problems, and explicit base-policy violations are allowed. Each finding contains
+only the demonstrated problem, its operational impact, and real `file:line` locations.
 Policy findings must quote an exact rule from the base `AI_REVIEW.md`. The
 program verifies files, line ranges, and policy quotations before publication.
 Style, naming, and generic improvement opinions are forbidden. Risk and
