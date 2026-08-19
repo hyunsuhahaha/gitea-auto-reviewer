@@ -56,6 +56,8 @@ def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: P
     assert captured["command"][captured["command"].index("--cd") + 1] == str(repository)
     assert "--skip-git-repo-check" not in captured["command"]
     assert "--ephemeral" in captured["command"]
+    assert any("mcp_servers.gitnexus.command" in part for part in captured["command"])
+    assert any("GITNEXUS_MCP_DEFAULT_REPO" in part for part in captured["command"])
     assert "GITEA_TOKEN" not in captured["env"]
     assert "COMPANY_SECRET" not in captured["env"]
 

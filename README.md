@@ -14,6 +14,7 @@ push commits, or modify branch protection.
 
 ```text
 PR head ── existing Windows test runner
+              ├─ GitNexus analyze at the exact head SHA
               ├─ Django check
               ├─ migration check
               ├─ pytest
@@ -31,6 +32,7 @@ pull_request_target on trusted base workflow
                     Codex auth: yes
                     Gitea token: no
                     sandbox: read-only
+                    GitNexus MCP: yes
                           │
                      review.json
                           │
@@ -44,6 +46,7 @@ pull_request_target on trusted base workflow
 The three CLI processes run sequentially in one Windows job:
 
 ```bash
+gitea-auto-reviewer index ...    # build/update the PR-head code graph
 gitea-auto-reviewer evidence ... # trusted internal PR execution, sanitized child environment
 gitea-auto-reviewer review ...   # Codex session, consumes evidence, no Gitea credential
 gitea-auto-reviewer comment ...  # Gitea credential, never invokes Codex or PR code
@@ -94,6 +97,7 @@ runners and repositories trust each other.
 - Python 3.11 or newer
 - Git
 - Codex CLI with `--output-schema` support
+- GitNexus CLI
 - A dedicated Windows Gitea runner with the `ai-review-windows` label
 - A ChatGPT account entitled to use Codex
 - A Gitea token that can read and write PR/issue comments
@@ -114,6 +118,13 @@ git clone https://github.com/hyunsuhahaha/gitea-auto-reviewer.git
 cd gitea-auto-reviewer
 python -m pip install .
 python -m pip install uv
+```
+
+Install GitNexus once as the dedicated runner account (not inside each PR):
+
+```powershell
+npm install -g gitnexus
+gitnexus --version
 ```
 
 Do not run `pip install .` against an untrusted PR checkout. Python build hooks
@@ -149,7 +160,7 @@ to run `codex login` again. See the official
 5. Install `uv` in the persistent reviewer virtual environment. Every PR still
    gets a fresh `.venv-ci`; uv reuses its Windows package cache to avoid slow
    repeated pip installations.
-6. Ensure `gitea-auto-reviewer` and `codex` are available to the dedicated
+6. Ensure `gitea-auto-reviewer`, `codex`, and `gitnexus` are available to the dedicated
    runner account and that the runner has the `ai-review-windows` label.
 
 The example uses `pull_request_target` so the workflow definition comes from
@@ -158,6 +169,16 @@ The example uses `pull_request_target` so the workflow definition comes from
    and keeps the later Codex process read-only and credential-free.
 
 ## CLI
+
+Index the checked-out PR head before review. The command rejects a checkout
+whose actual `HEAD` differs from the supplied SHA:
+
+```powershell
+gitea-auto-reviewer index `
+  --head-sha 2222222222222222222222222222222222222222 `
+  --repo-dir C:\runner\work\payments `
+  --gitnexus-binary C:\Users\GiteaAIReview\AppData\Roaming\npm\gitnexus.cmd
+```
 
 Collect deterministic evidence on the credential-free Windows evidence runner:
 
@@ -189,8 +210,16 @@ gitea-auto-reviewer review \
   --head-sha 2222222222222222222222222222222222222222 \
   --repo-dir /runner/work/payments \
   --evidence-file /runner/temp/evidence.json \
+  --gitnexus-binary gitnexus \
   --output /runner/temp/review.json
 ```
+
+Both Codex passes receive the same repository-scoped GitNexus STDIO MCP
+server. The first pass must query changed symbols, context, impact, and
+affected processes before drafting. The low-effort rejection pass can query
+the graph again to confirm or disprove findings. GitNexus supplies static
+change-impact evidence; the reviewer verifies publishable claims against real
+repository files and deterministic CI evidence.
 
 Post or update the bot comment:
 
@@ -298,7 +327,7 @@ This prevents a PR from changing the instructions used to review itself.
 
 ## Evidence boundary and future inputs
 
-The context contains the read-only repository, diff, base policy, and
+The context contains the read-only repository, GitNexus code graph, diff, base policy, and
 SHA-bound evidence from isolated CI. v0.1 implements Django check, migration
 check, and pytest. Future versions can add normalized Ruff and Semgrep results.
 It does not add a provider interface, web server, database, or analysis framework.
@@ -317,5 +346,7 @@ credentials, or a running Gitea instance.
 
 - [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
 - [Codex authentication](https://learn.chatgpt.com/docs/auth)
+- [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+- [GitNexus](https://github.com/nxpatterns/gitnexus)
 - [Gitea Actions](https://docs.gitea.com/usage/actions/)
 - [Gitea Actions security guidance](https://docs.gitea.com/usage/actions/overview/)

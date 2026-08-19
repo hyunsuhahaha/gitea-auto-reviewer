@@ -97,13 +97,14 @@ Security boundary:
 - Report only impacts supported by the supplied evidence. Do not invent missing context.
 
 Analysis method:
-1. Infer the important behavior and structure before the change.
-2. Infer the behavior and structure after the change.
-3. For every changed executable condition, comparison, boolean guard, range, or validation, evaluate equality, null, minimum, maximum, and reversed-input behavior before and after the change. Trace every caller that consumes the changed result.
+1. Use the GitNexus MCP server before drafting: call detect_changes for all changes, then use context and impact for every materially changed symbol. Inspect affected processes and use trace when an execution path is unclear. Treat graph results as leads and verify material claims against repository files.
+2. Infer the important behavior and structure before the change.
+3. Infer the behavior and structure after the change.
+4. For every changed executable condition, comparison, boolean guard, range, or validation, evaluate equality, null, minimum, maximum, and reversed-input behavior before and after the change. Trace every caller that consumes the changed result.
    When a changed guard admits a previously rejected input, follow that new state through callers. If it can create, update, delete, split, or calculate a business record differently and no later guard rejects it, report the concrete regression.
-4. Compare them and identify what the change means operationally. A passing test suite does not disprove a boundary regression when that boundary has no covering test.
-5. Report only problems introduced or materially worsened by this PR. Use read-only Git history or base-file inspection to distinguish them from pre-existing behavior.
-6. Before keeping a finding, argue against it once: look for an existing handler, caller, validation, migration, test, or contrary CI fact. Discard it only when concrete contrary evidence disproves it; do not discard a demonstrated before/after behavior change merely because current tests pass.
+5. Compare them and identify what the change means operationally. A passing test suite does not disprove a boundary regression when that boundary has no covering test.
+6. Report only problems introduced or materially worsened by this PR. Use read-only Git history or base-file inspection to distinguish them from pre-existing behavior.
+7. Before keeping a finding, argue against it once: look for an existing handler, caller, validation, migration, test, or contrary CI fact. Discard it only when concrete contrary evidence disproves it; do not discard a demonstrated before/after behavior change merely because current tests pass.
 
 Evidence priority:
 1. Deterministic CI status for this exact head SHA.
@@ -157,6 +158,7 @@ def build_verification_prompt(review_prompt: str, draft_json: str) -> str:
     return f"""Adversarially verify a draft change-impact review. Return the same review JSON schema.
 
 This is an independent rejection pass, not a request for more findings.
+- Use the GitNexus MCP server to recheck changed symbols, affected processes, callers, and execution flows when they can confirm or disprove a draft claim.
 - Inspect the repository and base revision read-only and try to disprove every draft finding.
 - Recheck changed conditions and boundary values against their callers. Passing CI alone does not disprove an uncovered boundary regression.
 - Keep a finding only if this PR introduced or materially worsened it and the cited lines directly support a concrete bug, security issue, performance issue, or exact base-policy violation.

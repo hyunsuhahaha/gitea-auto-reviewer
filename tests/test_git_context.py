@@ -84,3 +84,6 @@ def test_review_prompt_requires_boundary_and_caller_analysis() -> None:
     assert "equality, null, minimum, maximum" in prompt
     assert "follow that new state through callers" in prompt
     assert "Do not repeat CI check results" in prompt
+    assert "detect_changes" in prompt
+    assert "context and impact" in prompt
+    assert "affected processes" in prompt

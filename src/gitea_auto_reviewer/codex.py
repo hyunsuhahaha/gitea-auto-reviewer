@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
 
 from .review import REVIEW_JSON_SCHEMA, Review
+from .gitnexus import executable_command, mcp_config
 
 SAFE_ENVIRONMENT_NAMES = {
     "APPDATA",
@@ -41,20 +41,10 @@ def safe_codex_environment() -> dict[str, str]:
     return {name: value for name, value in os.environ.items() if name.upper() in allowed}
 
 
-def _codex_command(binary: str) -> list[str]:
-    if os.name == "nt" and Path(binary).suffix.lower() != ".exe":
-        shim_name = binary if Path(binary).suffix.lower() == ".cmd" else f"{binary}.cmd"
-        shim = shutil.which(shim_name)
-        if shim:
-            system_root = os.environ.get("SYSTEMROOT", r"C:\Windows")
-            return [str(Path(system_root) / "System32" / "cmd.exe"), "/d", "/s", "/c", shim]
-    return [shutil.which(binary) or binary]
-
-
 def assert_logged_in(codex_binary: str = "codex") -> None:
     try:
         result = subprocess.run(
-            [*_codex_command(codex_binary), "login", "status"],
+            [*executable_command(codex_binary), "login", "status"],
             check=False,
             capture_output=True,
             text=True,
@@ -73,6 +63,7 @@ def run_codex_review(
     temp_root: Path | None = None,
     fixed_fields: dict[str, Any] | None = None,
     reasoning_effort: str = "high",
+    gitnexus_binary: str = "gitnexus",
 ) -> Review:
     if reasoning_effort not in {"low", "medium", "high"}:
         raise ValueError("reasoning_effort must be low, medium, or high")
@@ -82,11 +73,12 @@ def run_codex_review(
         output_path = workdir / "review.json"
         schema_path.write_text(json.dumps(REVIEW_JSON_SCHEMA), encoding="utf-8")
         command = [
-            *_codex_command(codex_binary),
+            *executable_command(codex_binary),
             "exec",
             "-",
             "--config",
             f'model_reasoning_effort="{reasoning_effort}"',
+            *mcp_config(gitnexus_binary, repository),
             "--sandbox",
             "read-only",
             "--ephemeral",

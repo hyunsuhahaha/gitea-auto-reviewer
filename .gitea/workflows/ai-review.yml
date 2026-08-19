@@ -21,6 +21,7 @@ jobs:
       REVIEWER_EXE: C:\gitea\ai-review\.venv\Scripts\gitea-auto-reviewer.exe
       UV_EXE: C:\gitea\ai-review\.venv\Scripts\uv.exe
       CI_PYTHON: .\.venv-ci\Scripts\python.exe
+      GITNEXUS_EXE: C:\Users\GiteaAIReview\AppData\Roaming\npm\gitnexus.cmd
     steps:
       - name: Check out exact PR head
         uses: actions/checkout@v4
@@ -33,6 +34,14 @@ jobs:
         env:
           BASE_SHA: ${{ gitea.event.pull_request.base.sha }}
         run: git fetch --no-tags origin $env:BASE_SHA
+
+      - name: Index exact PR head with GitNexus
+        env:
+          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+        run: |
+          & $env:REVIEWER_EXE index `
+            --head-sha "$env:HEAD_SHA" `
+            --gitnexus-binary "$env:GITNEXUS_EXE"
 
       - name: Create isolated CI environment
         run: |
@@ -71,6 +80,7 @@ jobs:
             --base-sha "$env:BASE_SHA" `
             --head-sha "$env:HEAD_SHA" `
             --evidence-file "$env:EVIDENCE_FILE" `
+            --gitnexus-binary "$env:GITNEXUS_EXE" `
             --output "$env:REVIEW_FILE"
 
       - name: Post or update PR comment

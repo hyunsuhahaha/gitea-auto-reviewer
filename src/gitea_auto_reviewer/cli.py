@@ -12,12 +12,19 @@ from .codex import assert_logged_in, run_codex_review
 from .evidence import Evidence, collect_evidence
 from .git_context import build_prompt, build_verification_prompt, collect_context, validate_sha
 from .gitea import GiteaClient
+from .gitnexus import index_repository
 from .review import Review, TestResult, render_markdown, validate_grounding, validate_verification
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gitea-auto-reviewer")
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    index = subparsers.add_parser("index", help="index the exact PR head with GitNexus")
+    index.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
+    index.add_argument("--repo-dir", type=Path, default=Path.cwd())
+    index.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
+    index.add_argument("--timeout", type=int, default=900)
 
     evidence = subparsers.add_parser("evidence", help="run deterministic checks in isolated CI")
     evidence.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -37,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--output", type=Path, default=Path("review.json"))
     review.add_argument("--evidence-file", type=Path, required=True)
     review.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
+    review.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
     review.add_argument("--max-diff-bytes", type=int, default=1_000_000)
 
     comment = subparsers.add_parser("comment", help="validate and post a review.json")
@@ -100,6 +108,7 @@ def review_command(arguments: argparse.Namespace) -> None:
         arguments.repo_dir.resolve(),
         arguments.codex_binary,
         fixed_fields=fixed_fields,
+        gitnexus_binary=arguments.gitnexus_binary,
     )
     result = run_codex_review(
         build_verification_prompt(prompt, draft.to_json()),
@@ -107,6 +116,7 @@ def review_command(arguments: argparse.Namespace) -> None:
         arguments.codex_binary,
         fixed_fields=fixed_fields,
         reasoning_effort="low",
+        gitnexus_binary=arguments.gitnexus_binary,
     )
     validate_verification(draft, result)
     result = replace(
@@ -135,6 +145,16 @@ def evidence_command(arguments: argparse.Namespace) -> None:
     )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Evidence written to {arguments.output}")
+
+
+def index_command(arguments: argparse.Namespace) -> None:
+    index_repository(
+        arguments.repo_dir,
+        str(_required(arguments.head_sha, "head SHA")),
+        arguments.gitnexus_binary,
+        arguments.timeout,
+    )
+    print("GitNexus index is ready")
 
 
 def _evidence_tests(evidence: Evidence) -> TestResult:
@@ -166,7 +186,9 @@ def comment_command(arguments: argparse.Namespace) -> None:
 def main(argv: list[str] | None = None) -> int:
     try:
         arguments = build_parser().parse_args(argv)
-        if arguments.command == "evidence":
+        if arguments.command == "index":
+            index_command(arguments)
+        elif arguments.command == "evidence":
             evidence_command(arguments)
         elif arguments.command == "review":
             review_command(arguments)
