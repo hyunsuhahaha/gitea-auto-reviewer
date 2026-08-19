@@ -493,7 +493,7 @@ def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
         lines.append(f"  영향: {finding.impact}")
         if finding.policy_quote:
             lines.append(f'  규칙: "{finding.policy_quote}"')
-        lines.extend(f"  └ {reference}" for reference in finding.evidence)
+        lines.extend(f"  └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
     return ["", *lines]
 
 

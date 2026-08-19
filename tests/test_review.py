@@ -48,7 +48,7 @@ def impact_payload() -> dict[str, object]:
             "category": "bug",
             "problem": "기존 Product 생성 경로가 remark를 전달하지 않음",
             "impact": "상품 생성이 실패할 수 있음",
-            "evidence": ["product/models.py:31", "product/services.py:18"],
+            "evidence": ["product/models.py:31", "product/models.py:44", "product/services.py:18"],
             "policy_quote": None,
         }],
         "affected_files": [{
@@ -96,6 +96,11 @@ def test_review_renders_compact_change_impact_summary() -> None:
     assert "유용했다면" not in rendered
     assert "노이즈였다면" not in rendered
     assert "Critical" not in rendered
+    warning = rendered[rendered.index("주의"):rendered.index("영향 파일")]
+    assert warning.count("└ product/models.py") == 1
+    assert "product/models.py:31" not in warning
+    assert "product/models.py:44" not in warning
+    assert "└ product/services.py" in warning
     assert rendered.rfind("영향 파일") > rendered.rfind("주의")
     assert "• app/views/product_admin.py" in rendered
     assert "Product 생성 호출자가 새 필드의 영향을 받음 — app/views/product_admin.py:52" in rendered
