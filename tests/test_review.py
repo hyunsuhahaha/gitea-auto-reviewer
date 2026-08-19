@@ -24,6 +24,10 @@ def impact_payload() -> dict[str, object]:
             "product/migrations/0008_product_remark.py",
         ],
         "database_change": "yes",
+        "database_change_details": [{
+            "description": "product_product 테이블에 remark 컬럼 추가",
+            "evidence": ["product/migrations/0008_product_remark.py:18"],
+        }],
         "django_check": "pass",
         "migration": "no_missing",
         "api_contract": "changed",
@@ -70,6 +74,7 @@ def test_review_renders_compact_change_impact_summary() -> None:
     assert "변경 파일" in rendered and "7개" in rendered
     assert "└ product/models.py" in rendered
     assert "DB 변경" in rendered and "있음" in rendered
+    assert "product_product 테이블에 remark 컬럼 추가 — product/migrations/0008_product_remark.py:18" in rendered
     assert "└ SCM 상품 동기화 경로에서 Product 생성 확인 — scm/product_sync.py:74" in rendered
     assert "검증된 사실" in rendered and "Django check PASS" in rendered
     assert "Migration check 누락 없음" in rendered
@@ -117,6 +122,16 @@ def test_external_not_detected_has_no_abstract_reason() -> None:
     assert "SCM 상품 동기화" not in rendered
 
 
+def test_database_not_detected_has_no_details() -> None:
+    payload = impact_payload()
+    payload.update(database_change="not_detected", database_change_details=[])
+
+    rendered = render_markdown(Review.from_json(json.dumps(payload)), 1, "b" * 40, "변경")
+
+    assert "DB 변경" in rendered and "직접 영향 미발견" in rendered
+    assert "product_product 테이블" not in rendered
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
@@ -125,6 +140,7 @@ def test_external_not_detected_has_no_abstract_reason() -> None:
         lambda value: value.update(tests={"status": "pass", "passed": None, "total": None}),
         lambda value: value.update(changed_files=0),
         lambda value: value.update(database_change="no"),
+        lambda value: value.update(database_change_details=[]),
         lambda value: value.update(external_integration_reason=None),
         lambda value: value.update(risk_evidence=[]),
         lambda value: value.update(findings=[{"category": "style"}]),
@@ -144,6 +160,7 @@ def test_grounding_checks_files_lines_and_policy_quotes(tmp_path) -> None:
     source.write_text("one\ntwo\n", encoding="utf-8")
     payload = impact_payload()
     payload["risk_evidence"] = ["product/models.py:2"]
+    payload.update(database_change="not_detected", database_change_details=[])
     payload.update(
         external_integration="not_detected",
         external_integration_reason=None,
@@ -188,3 +205,7 @@ def test_verifier_may_only_remove_verbatim_findings() -> None:
         external_integration_evidence=[],
     )
     validate_verification(draft, Review.from_json(json.dumps(downgraded)))
+
+    database_downgraded = impact_payload()
+    database_downgraded.update(database_change="not_detected", database_change_details=[])
+    validate_verification(draft, Review.from_json(json.dumps(database_downgraded)))

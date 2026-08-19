@@ -232,6 +232,7 @@ shows only the compact result:
   └ tests/test_product.py
   └ product/migrations/0008_product_remark.py
 DB 변경          있음
+  └ product_product 테이블에 remark 컬럼 추가 — product/migrations/0008_product_remark.py:18
 API Contract     변경
 외부연동         영향 가능
   └ SCM 상품 동기화 경로에서 Product 생성 확인 — scm/product_sync.py:74

@@ -12,6 +12,7 @@ FIELDS = {
     "changed_files",
     "changed_file_paths",
     "database_change",
+    "database_change_details",
     "django_check",
     "migration",
     "api_contract",
@@ -39,6 +40,7 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
             "items": {"type": "string", "minLength": 1, "maxLength": 500},
         },
         "database_change": {"enum": ["yes", "possible", "not_detected"]},
+        "database_change_details": {"$ref": "#/$defs/impactDetails"},
         "django_check": {"enum": ["pass", "fail", "error", "not_run"]},
         "migration": {"enum": ["no_missing", "missing", "error", "not_run"]},
         "api_contract": {"enum": ["changed", "possible", "not_detected"]},
@@ -78,6 +80,19 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
             "minItems": 1,
             "maxItems": 5,
             "items": {"type": "string", "pattern": "^.+:[1-9][0-9]*$", "maxLength": 300},
+        },
+        "impactDetails": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["description", "evidence"],
+                "properties": {
+                    "description": {"type": "string", "minLength": 1, "maxLength": 500},
+                    "evidence": {"$ref": "#/$defs/requiredReferences"},
+                },
+            },
         },
         "findings": {
             "type": "array",
@@ -150,10 +165,23 @@ class Finding:
 
 
 @dataclass(frozen=True)
+class ImpactDetail:
+    description: str
+    evidence: tuple[str, ...]
+
+    @classmethod
+    def from_value(cls, value: object) -> ImpactDetail:
+        if not isinstance(value, dict) or set(value) != {"description", "evidence"}:
+            raise ValueError("impact detail does not match the required schema")
+        return cls(_text(value["description"], "description"), _references(value["evidence"], required=True))
+
+
+@dataclass(frozen=True)
 class Review:
     changed_files: int
     changed_file_paths: tuple[str, ...]
     database_change: str
+    database_change_details: tuple[ImpactDetail, ...]
     django_check: str
     migration: str
     api_contract: str
@@ -182,6 +210,11 @@ class Review:
         if len(changed_file_paths) != changed_files:
             raise ValueError("changed file count does not match changed_file_paths")
         _enum(value, "database_change", {"yes", "possible", "not_detected"})
+        database_details = _impact_details(value["database_change_details"])
+        if value["database_change"] == "not_detected" and database_details:
+            raise ValueError("not_detected database change must not include details")
+        if value["database_change"] != "not_detected" and not database_details:
+            raise ValueError("database change requires concrete details")
         _enum(value, "django_check", {"pass", "fail", "error", "not_run"})
         _enum(value, "migration", {"no_missing", "missing", "error", "not_run"})
         _enum(value, "api_contract", {"changed", "possible", "not_detected"})
@@ -202,6 +235,7 @@ class Review:
             changed_files=changed_files,
             changed_file_paths=changed_file_paths,
             database_change=value["database_change"],
+            database_change_details=database_details,
             django_check=value["django_check"],
             migration=value["migration"],
             api_contract=value["api_contract"],
@@ -261,6 +295,12 @@ def _findings(value: object) -> tuple[Finding, ...]:
     return tuple(Finding.from_value(item) for item in value)
 
 
+def _impact_details(value: object) -> tuple[ImpactDetail, ...]:
+    if not isinstance(value, list) or len(value) > 5:
+        raise ValueError("impact details must contain 0-5 items")
+    return tuple(ImpactDetail.from_value(item) for item in value)
+
+
 def _text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 500:
         raise ValueError(f"invalid {name}")
@@ -286,6 +326,7 @@ def validate_grounding(review: Review, repository: Path, policy: str) -> None:
     root = repository.resolve()
     for reference in (
         *review.external_integration_evidence,
+        *(ref for item in review.database_change_details for ref in item.evidence),
         *review.risk_evidence,
         *(ref for item in review.findings for ref in item.evidence),
     ):
@@ -321,6 +362,10 @@ def validate_verification(draft: Review, verified: Review) -> None:
     )
     if verified_external != draft_external and verified_external != ("not_detected", None, ()):
         raise ValueError("verification introduced or rewrote external integration impact")
+    draft_database = (draft.database_change, draft.database_change_details)
+    verified_database = (verified.database_change, verified.database_change_details)
+    if verified_database != draft_database and verified_database != ("not_detected", ()):
+        raise ValueError("verification introduced or rewrote database impact")
 
 
 def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str) -> str:
@@ -338,6 +383,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         _row("변경 파일", f"{review.changed_files}개"),
         *(f"  └ {path}" for path in review.changed_file_paths),
         _row("DB 변경", {"yes": "있음", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.database_change]),
+        *(f"  └ {item.description} — {', '.join(item.evidence)}" for item in review.database_change_details),
         _row(
             "API Contract",
             {"changed": "변경", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.api_contract],
