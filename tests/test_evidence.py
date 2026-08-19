@@ -12,6 +12,7 @@ def test_evidence_environment_removes_runner_credentials(monkeypatch, tmp_path: 
     monkeypatch.setenv("CODEX_HOME", "credential-store")
     monkeypatch.setenv("COMPANY_SECRET", "secret")
     monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "configurations.ci")
+    monkeypatch.setenv("NOX_MES_CI_LIVE_PATH", r"C:\devprojects_test\shared_test\live.py")
 
     environment = safe_evidence_environment(tmp_path)
 
@@ -19,6 +20,7 @@ def test_evidence_environment_removes_runner_credentials(monkeypatch, tmp_path: 
     assert "CODEX_HOME" not in environment
     assert "COMPANY_SECRET" not in environment
     assert environment["DJANGO_SETTINGS_MODULE"] == "configurations.ci"
+    assert environment["NOX_MES_CI_LIVE_PATH"] == r"C:\devprojects_test\shared_test\live.py"
     assert environment["USERPROFILE"] == str(tmp_path)
 
 
