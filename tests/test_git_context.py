@@ -1,7 +1,7 @@
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from gitea_auto_reviewer.git_context import build_verification_prompt, collect_context
+from gitea_auto_reviewer.git_context import build_prompt, build_verification_prompt, collect_context
 
 
 def test_policy_is_read_from_base_commit(monkeypatch, tmp_path: Path) -> None:
@@ -23,6 +23,7 @@ def test_policy_is_read_from_base_commit(monkeypatch, tmp_path: Path) -> None:
 
     assert context.policy == "Review database risks."
     assert context.changed_files == 2
+    assert context.changed_file_paths == ("a.py", "b.py")
     assert ["git", "show", f"{'a' * 40}:AI_REVIEW.md"] in calls
     assert ["git", "diff", "--no-ext-diff", "--unified=80", f"{'a' * 40}...{'b' * 40}", "--"] in calls
 
@@ -65,3 +66,21 @@ def test_verification_prompt_is_rejection_only() -> None:
     assert "Do not edit or add findings" in prompt
     assert "Silence is a valid" in prompt
     assert "<DRAFT_REVIEW>" in prompt
+    assert "boundary values" in prompt
+
+
+def test_review_prompt_requires_boundary_and_caller_analysis() -> None:
+    context = type("Context", (), {
+        "diff": "diff",
+        "policy": "policy",
+        "base_sha": "a" * 40,
+        "head_sha": "b" * 40,
+        "changed_files": 1,
+        "changed_file_paths": ("domain/range.py",),
+    })()
+
+    prompt = build_prompt(context, "owner/repo", 1, "boundary", "{}")
+
+    assert "equality, null, minimum, maximum" in prompt
+    assert "follow that new state through callers" in prompt
+    assert "Do not repeat CI check results" in prompt

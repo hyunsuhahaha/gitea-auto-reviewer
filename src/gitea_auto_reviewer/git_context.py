@@ -18,6 +18,7 @@ class ReviewContext:
     base_sha: str
     head_sha: str
     changed_files: int
+    changed_file_paths: tuple[str, ...]
 
 
 def validate_sha(value: str) -> str:
@@ -53,11 +54,12 @@ def collect_context(
         ["diff", "--name-only", f"{base_sha}...{head_sha}", "--"],
         required=True,
     )
-    changed_files = len([line for line in changed.splitlines() if line.strip()])
+    changed_file_paths = tuple(line.strip() for line in changed.splitlines() if line.strip())
+    changed_files = len(changed_file_paths)
     if changed_files < 1:
         raise ValueError("the pull request has no changed files")
     policy = _git(repository, ["show", f"{base_sha}:AI_REVIEW.md"], required=False)
-    return ReviewContext(diff, policy.strip() or DEFAULT_POLICY, base_sha, head_sha, changed_files)
+    return ReviewContext(diff, policy.strip() or DEFAULT_POLICY, base_sha, head_sha, changed_files, changed_file_paths)
 
 
 def _git(repository: Path, arguments: list[str], required: bool) -> str:
@@ -97,9 +99,11 @@ Security boundary:
 Analysis method:
 1. Infer the important behavior and structure before the change.
 2. Infer the behavior and structure after the change.
-3. Compare them and identify what the change means operationally.
-4. Report only problems introduced or materially worsened by this PR. Use read-only Git history or base-file inspection to distinguish them from pre-existing behavior.
-5. Before keeping a finding, argue against it once: look for an existing handler, caller, validation, migration, test, or contrary CI fact. Discard it if disproved or if concrete evidence remains incomplete.
+3. For every changed executable condition, comparison, boolean guard, range, or validation, evaluate equality, null, minimum, maximum, and reversed-input behavior before and after the change. Trace every caller that consumes the changed result.
+   When a changed guard admits a previously rejected input, follow that new state through callers. If it can create, update, delete, split, or calculate a business record differently and no later guard rejects it, report the concrete regression.
+4. Compare them and identify what the change means operationally. A passing test suite does not disprove a boundary regression when that boundary has no covering test.
+5. Report only problems introduced or materially worsened by this PR. Use read-only Git history or base-file inspection to distinguish them from pre-existing behavior.
+6. Before keeping a finding, argue against it once: look for an existing handler, caller, validation, migration, test, or contrary CI fact. Discard it only when concrete contrary evidence disproves it; do not discard a demonstrated before/after behavior change merely because current tests pass.
 
 Evidence priority:
 1. Deterministic CI status for this exact head SHA.
@@ -120,10 +124,12 @@ Output rules:
 - For medium or high risk, risk_evidence must contain at least one verified repo-relative file:line reference.
 - Every finding must cite one or more verified repo-relative file:line references. Do not guess line numbers.
 - Use an empty list when there is no concrete, PR-relevant evidence. Silence is better than filler, generic advice, or repetition.
+- key_changes must describe changed repository behavior only. Do not repeat CI check results there.
 - Use not_detected, never a definitive "none", when no direct DB, API-contract, or external-integration impact was found.
 - When external_integration is affected or possible, provide a concrete one-line reason and verified file:line evidence. When it is not_detected, use null and an empty evidence list.
 - Apply PROJECT_POLICY only when its explicit text supports the claim; do not invent policy conventions.
 - changed_files must be exactly {context.changed_files}.
+- changed_file_paths must contain exactly these paths: {list(context.changed_file_paths)}.
 - Set django_check to the CI django_check status.
 - Map CI migration_check pass/fail/error/not_run to migration no_missing/missing/error/not_run.
 - Set tests from the CI pytest status and counts. Use null counts for error or not_run.
@@ -149,6 +155,7 @@ def build_verification_prompt(review_prompt: str, draft_json: str) -> str:
 
 This is an independent rejection pass, not a request for more findings.
 - Inspect the repository and base revision read-only and try to disprove every draft finding.
+- Recheck changed conditions and boundary values against their callers. Passing CI alone does not disprove an uncovered boundary regression.
 - Keep a finding only if this PR introduced or materially worsened it and the cited lines directly support a concrete bug, security issue, performance issue, or exact base-policy violation.
 - Reject pre-existing behavior, speculation, style, naming, generic advice, inaccurate lines, impractical fixes, and claims contradicted by CI or surrounding code.
 - A policy finding survives only when policy_quote is verbatim in PROJECT_POLICY.

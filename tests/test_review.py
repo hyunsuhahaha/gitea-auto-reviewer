@@ -14,6 +14,15 @@ from gitea_auto_reviewer.review import (
 def impact_payload() -> dict[str, object]:
     return {
         "changed_files": 7,
+        "changed_file_paths": [
+            "product/models.py",
+            "product/services.py",
+            "product/api.py",
+            "product/serializers.py",
+            "scm/product_sync.py",
+            "tests/test_product.py",
+            "product/migrations/0008_product_remark.py",
+        ],
         "database_change": "yes",
         "django_check": "pass",
         "migration": "no_missing",
@@ -59,6 +68,7 @@ def test_review_renders_compact_change_impact_summary() -> None:
 
     assert "│ PR #214 상품 비고 기능 추가" in rendered
     assert "변경 파일" in rendered and "7개" in rendered
+    assert "└ product/models.py" in rendered
     assert "DB 변경" in rendered and "있음" in rendered
     assert "└ SCM 상품 동기화 경로에서 Product 생성 확인 — scm/product_sync.py:74" in rendered
     assert "검증된 사실" in rendered and "Django check PASS" in rendered

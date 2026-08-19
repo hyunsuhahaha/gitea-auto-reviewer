@@ -5,11 +5,12 @@ from __future__ import annotations
 import json
 import unicodedata
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 FIELDS = {
     "changed_files",
+    "changed_file_paths",
     "database_change",
     "django_check",
     "migration",
@@ -32,6 +33,11 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
     "required": sorted(FIELDS),
     "properties": {
         "changed_files": {"type": "integer", "minimum": 1},
+        "changed_file_paths": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1, "maxLength": 500},
+        },
         "database_change": {"enum": ["yes", "possible", "not_detected"]},
         "django_check": {"enum": ["pass", "fail", "error", "not_run"]},
         "migration": {"enum": ["no_missing", "missing", "error", "not_run"]},
@@ -146,6 +152,7 @@ class Finding:
 @dataclass(frozen=True)
 class Review:
     changed_files: int
+    changed_file_paths: tuple[str, ...]
     database_change: str
     django_check: str
     migration: str
@@ -171,6 +178,9 @@ class Review:
         changed_files = value["changed_files"]
         if not _count(changed_files) or changed_files < 1:
             raise ValueError("changed_files must be a positive integer")
+        changed_file_paths = _paths(value["changed_file_paths"])
+        if len(changed_file_paths) != changed_files:
+            raise ValueError("changed file count does not match changed_file_paths")
         _enum(value, "database_change", {"yes", "possible", "not_detected"})
         _enum(value, "django_check", {"pass", "fail", "error", "not_run"})
         _enum(value, "migration", {"no_missing", "missing", "error", "not_run"})
@@ -190,6 +200,7 @@ class Review:
             external_reason = _text(external_reason, "external_integration_reason")
         return cls(
             changed_files=changed_files,
+            changed_file_paths=changed_file_paths,
             database_change=value["database_change"],
             django_check=value["django_check"],
             migration=value["migration"],
@@ -207,13 +218,27 @@ class Review:
 
     def to_json(self) -> str:
         value = asdict(self)
-        for name in ("external_integration_evidence", "risk_evidence", "key_changes", "findings"):
+        for name in ("changed_file_paths", "external_integration_evidence", "risk_evidence", "key_changes", "findings"):
             value[name] = list(value[name])
         return json.dumps(value, ensure_ascii=False, indent=2)
 
 
 def _count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _paths(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not value:
+        raise ValueError("changed_file_paths must not be empty")
+    paths: list[str] = []
+    for item in value:
+        if not isinstance(item, str) or not item or len(item) > 500 or "\n" in item:
+            raise ValueError("invalid changed file path")
+        path = PurePosixPath(item)
+        if path.is_absolute() or ".." in path.parts:
+            raise ValueError("invalid changed file path")
+        paths.append(item)
+    return tuple(paths)
 
 
 def _enum(value: dict[str, object], name: str, allowed: set[str]) -> None:
@@ -311,6 +336,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         middle,
         "",
         _row("변경 파일", f"{review.changed_files}개"),
+        *(f"  └ {path}" for path in review.changed_file_paths),
         _row("DB 변경", {"yes": "있음", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.database_change]),
         _row(
             "API Contract",

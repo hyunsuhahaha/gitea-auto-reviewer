@@ -18,6 +18,7 @@ def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: P
             json.dumps(
                 {
                     "changed_files": 1,
+                    "changed_file_paths": ["settings.py"],
                     "database_change": "not_detected",
                     "django_check": "not_run",
                     "migration": "not_run",
@@ -47,6 +48,7 @@ def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: P
 
     assert review.risk == "low"
     assert "--sandbox" in captured["command"]
+    assert captured["command"][captured["command"].index("--config") + 1] == 'model_reasoning_effort="high"'
     assert "read-only" in captured["command"]
     assert captured["command"][captured["command"].index("--cd") + 1] == str(repository)
     assert "--skip-git-repo-check" not in captured["command"]
@@ -70,6 +72,7 @@ def test_codex_applies_deterministic_fields_before_validation(monkeypatch, tmp_p
         output = Path(command[command.index("--output-last-message") + 1])
         payload = {
             "changed_files": 99,
+            "changed_file_paths": ["wrong.py"],
             "database_change": "not_detected",
             "django_check": "pass",
             "migration": "no_missing",
@@ -95,6 +98,7 @@ def test_codex_applies_deterministic_fields_before_validation(monkeypatch, tmp_p
         temp_root=tmp_path,
         fixed_fields={
             "changed_files": 1,
+            "changed_file_paths": ["settings.py"],
             "django_check": "pass",
             "migration": "no_missing",
             "tests": {"status": "not_run", "passed": None, "total": None},

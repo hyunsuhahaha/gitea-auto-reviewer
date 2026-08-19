@@ -82,6 +82,8 @@ def run_codex_review(
             *_codex_command(codex_binary),
             "exec",
             "-",
+            "--config",
+            'model_reasoning_effort="high"',
             "--sandbox",
             "read-only",
             "--ephemeral",

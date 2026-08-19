@@ -215,6 +215,13 @@ shows only the compact result:
 ├────────────────────────────┤
 
 변경 파일        7개
+  └ product/models.py
+  └ product/services.py
+  └ product/api.py
+  └ product/serializers.py
+  └ scm/product_sync.py
+  └ tests/test_product.py
+  └ product/migrations/0008_product_remark.py
 DB 변경          있음
 API Contract     변경
 외부연동         영향 가능
@@ -242,7 +249,7 @@ API Contract     변경
 ```
 
 The program validates the structured result before posting it. The changed-file
-count comes from Git. Django, migration, and pytest results come from the
+count and paths come from Git. Django, migration, and pytest results come from the
 evidence document and overwrite model output. Evidence whose `head_sha` does
 not exactly match the reviewed PR head is rejected. A hidden marker lets later
 runs update the existing comment without a database:
@@ -258,7 +265,10 @@ specific change, the expected state afterward, and real `file:line` locations.
 Policy findings must quote an exact rule from the base `AI_REVIEW.md`. The
 program verifies files, line ranges, and policy quotations before publication.
 Style, naming, and generic improvement opinions are forbidden. Risk and
-confidence remain separate, and deterministic CI facts take precedence. A
+confidence remain separate. Codex runs with high reasoning effort and must
+evaluate changed conditions at equality/null/minimum/maximum boundaries, then
+trace newly admitted states through callers before assigning risk.
+Deterministic CI facts take precedence. A
 second independent read-only Codex pass tries to disprove every draft finding;
 it may only retain a finding verbatim or delete it, never add or rewrite one.
 

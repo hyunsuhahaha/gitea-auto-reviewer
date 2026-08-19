@@ -88,6 +88,7 @@ def review_command(arguments: argparse.Namespace) -> None:
     prompt = build_prompt(context, repository, pr_number, pr_title, evidence.to_json())
     fixed_fields = {
         "changed_files": context.changed_files,
+        "changed_file_paths": list(context.changed_file_paths),
         "django_check": evidence.django_check.status,
         "migration": {"pass": "no_missing", "fail": "missing", "error": "error", "not_run": "not_run"}[
             evidence.migration_check.status
