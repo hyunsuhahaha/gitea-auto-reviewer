@@ -218,29 +218,27 @@ shows only the compact result:
 DB 변경          있음
 API Contract     변경
 외부연동         영향 가능
+  └ SCM 상품 동기화 경로에서 Product 생성 확인 — scm/product_sync.py:74
 
 검증된 사실
 ✅ Django check PASS
 ✅ Migration check 누락 없음
 ✅ 테스트(pytest) 147/147 PASS
 
-위험도           🟠 HIGH
+위험도           🟠 HIGH · 근거 HIGH
+                  product/models.py:31
 
 주요 변경
 • Product.remark 추가
 • 상품 등록·조회 API 변경
 
-새롭게 생긴 가정
-• 모든 Product 생성 경로가 remark를 처리해야 함
-• SCM/ERP가 변경된 payload를 처리할 수 있어야 함
-
 주의
-• SCM 동기화 코드에서 기존 Product 생성 경로 발견
-
-확인 필요
-□ remark 없는 기존 상품 생성
-□ SCM/ERP payload 호환성
-□ migration 적용 및 rollback
+• 기존 Product 생성 경로가 remark를 전달하지 않음
+  영향: 상품 생성이 실패할 수 있음
+  수정: remark를 전달하거나 모델 기본값을 정의
+  완료: remark 없는 기존 경로도 정상적으로 상품을 생성함
+  └ product/models.py:31
+  └ product/services.py:18
 ```
 
 The program validates the structured result before posting it. The changed-file
@@ -252,6 +250,17 @@ runs update the existing comment without a database:
 ```html
 <!-- gitea-auto-reviewer:pr=42:sha=abc123... -->
 ```
+
+To reduce confident but low-value commentary, findings disappear when none
+qualify. Only concrete bugs, security issues, performance issues, and explicit
+base-policy violations are allowed. Each finding must include its impact, a
+specific change, the expected state afterward, and real `file:line` locations.
+Policy findings must quote an exact rule from the base `AI_REVIEW.md`. The
+program verifies files, line ranges, and policy quotations before publication.
+Style, naming, and generic improvement opinions are forbidden. Risk and
+confidence remain separate, and deterministic CI facts take precedence. A
+second independent read-only Codex pass tries to disprove every draft finding;
+it may only retain a finding verbatim or delete it, never add or rewrite one.
 
 ## Project policy
 

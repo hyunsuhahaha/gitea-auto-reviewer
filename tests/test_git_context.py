@@ -1,7 +1,7 @@
 from pathlib import Path
 from subprocess import CompletedProcess
 
-from gitea_auto_reviewer.git_context import collect_context
+from gitea_auto_reviewer.git_context import build_verification_prompt, collect_context
 
 
 def test_policy_is_read_from_base_commit(monkeypatch, tmp_path: Path) -> None:
@@ -56,3 +56,12 @@ def test_repository_must_be_checked_out_at_pr_head(monkeypatch, tmp_path: Path) 
         assert "PR head SHA" in str(exc)
     else:
         raise AssertionError("mismatched checkout was accepted")
+
+
+def test_verification_prompt_is_rejection_only() -> None:
+    prompt = build_verification_prompt("original", '{"findings": []}')
+
+    assert "try to disprove every draft finding" in prompt
+    assert "Do not edit or add findings" in prompt
+    assert "Silence is a valid" in prompt
+    assert "<DRAFT_REVIEW>" in prompt

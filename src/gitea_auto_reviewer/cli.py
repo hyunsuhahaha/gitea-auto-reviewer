@@ -10,9 +10,9 @@ from pathlib import Path
 
 from .codex import assert_logged_in, run_codex_review
 from .evidence import Evidence, collect_evidence
-from .git_context import build_prompt, collect_context, validate_sha
+from .git_context import build_prompt, build_verification_prompt, collect_context, validate_sha
 from .gitea import GiteaClient
-from .review import Review, TestResult, render_markdown
+from .review import Review, TestResult, render_markdown, validate_grounding, validate_verification
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -85,13 +85,14 @@ def review_command(arguments: argparse.Namespace) -> None:
         raise ValueError("evidence belongs to a different PR head SHA")
     assert_logged_in(arguments.codex_binary)
     pr_title = str(_required(arguments.pr_title, "PR title"))
-    result = run_codex_review(
-        build_prompt(context, repository, pr_number, pr_title, evidence.to_json()),
+    prompt = build_prompt(context, repository, pr_number, pr_title, evidence.to_json())
+    draft = run_codex_review(
+        prompt,
         arguments.repo_dir.resolve(),
         arguments.codex_binary,
     )
-    result = replace(
-        result,
+    draft = replace(
+        draft,
         changed_files=context.changed_files,
         django_check=evidence.django_check.status,
         migration={"pass": "no_missing", "fail": "missing", "error": "error", "not_run": "not_run"}[
@@ -99,6 +100,23 @@ def review_command(arguments: argparse.Namespace) -> None:
         ],
         tests=_evidence_tests(evidence),
     )
+    result = run_codex_review(
+        build_verification_prompt(prompt, draft.to_json()),
+        arguments.repo_dir.resolve(),
+        arguments.codex_binary,
+    )
+    validate_verification(draft, result)
+    result = replace(
+        draft,
+        risk=result.risk,
+        risk_confidence=result.risk_confidence,
+        risk_evidence=result.risk_evidence,
+        findings=result.findings,
+        external_integration=result.external_integration,
+        external_integration_reason=result.external_integration_reason,
+        external_integration_evidence=result.external_integration_evidence,
+    )
+    validate_grounding(result, arguments.repo_dir.resolve(), context.policy)
     arguments.output.write_text(result.to_json() + "\n", encoding="utf-8")
     print(f"Review written to {arguments.output}")
 
