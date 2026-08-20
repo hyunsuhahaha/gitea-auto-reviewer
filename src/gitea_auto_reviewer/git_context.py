@@ -125,7 +125,8 @@ Output rules:
 - For medium or high risk, risk_evidence must contain at least one verified repo-relative file:line reference.
 - Every finding must cite one or more verified repo-relative file:line references. Do not guess line numbers.
 - Use an empty list when there is no concrete, PR-relevant evidence. Silence is better than filler, generic advice, or repetition.
-- key_changes must describe changed repository behavior only. Do not repeat CI check results there.
+- key_changes must describe every distinct material repository behavior change, not merely the five most important ones. Do not repeat CI check results there.
+- When there are at most 10 material changes, include all of them. When there are more than 10, include the 9 most important changes and use the final item exactly as `그 외 관련 변경 N건`, where N is the number omitted.
 - Use not_detected, never a definitive "none", when no direct DB, API-contract, or external-integration impact was found.
 - When database_change is yes or possible, database_change_details must name the concrete table/model and operation: table creation/removal, column addition/removal/type/null/default/index/constraint change, or data migration. Cite the migration or model file:line for every item. When not_detected, use an empty list.
 - database_change means schema only. Do not classify changes to values stored in existing columns, query filters, grouping, classification, or write timing as schema changes.
@@ -138,7 +139,7 @@ Output rules:
 - Map CI migration_check pass/fail/error/not_run to migration no_missing/missing/error/not_run.
 - Set tests from the CI pytest status and counts. Use null counts for error or not_run.
 - The program enforces these deterministic fields after generation; never reinterpret or contradict them.
-- Keep each list to the fewest useful items, maximum five.
+- Except key_changes, keep each list to the fewest useful items, maximum five.
 - affected_files is the final report section. Populate it only with unchanged repository files that GitNexus context, impact, or trace identifies as meaningful direct callers, callees, or affected-process participants. Exclude changed_file_paths, generic utilities, import-only links, and speculative relationships. Give each path one concise operational reason and verified file:line evidence. Use at most five items and an empty list when none qualify.
 
 <PROJECT_POLICY source="base:{context.base_sha}:AI_REVIEW.md">

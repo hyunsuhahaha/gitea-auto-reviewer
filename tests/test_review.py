@@ -158,6 +158,17 @@ def test_database_not_detected_has_no_details() -> None:
     assert "product_product 테이블" not in rendered
 
 
+def test_key_changes_accepts_ten_items_but_rejects_eleven() -> None:
+    payload = impact_payload()
+    payload["key_changes"] = [f"변경 {index}" for index in range(10)]
+    review = Review.from_json(json.dumps(payload))
+    assert len(review.key_changes) == 10
+
+    payload["key_changes"].append("그 외 관련 변경 1건")
+    with pytest.raises(ValueError, match="1-10"):
+        Review.from_json(json.dumps(payload))
+
+
 @pytest.mark.parametrize(
     "mutation",
     [

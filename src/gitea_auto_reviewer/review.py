@@ -75,7 +75,7 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
         "requiredItems": {
             "type": "array",
             "minItems": 1,
-            "maxItems": 5,
+            "maxItems": 10,
             "items": {"type": "string", "minLength": 1, "maxLength": 500},
         },
         "references": {
@@ -370,8 +370,8 @@ def _enum(value: dict[str, object], name: str, allowed: set[str]) -> None:
 
 
 def _items(value: object, name: str, required: bool) -> tuple[str, ...]:
-    if not isinstance(value, list) or len(value) > 5 or (required and not value):
-        raise ValueError(f"{name} must contain {'1-5' if required else '0-5'} items")
+    if not isinstance(value, list) or len(value) > 10 or (required and not value):
+        raise ValueError(f"{name} must contain {'1-10' if required else '0-10'} items")
     items = tuple(item.strip() for item in value if isinstance(item, str))
     if len(items) != len(value) or any(not item or len(item) > 500 for item in items):
         raise ValueError(f"{name} contains an invalid item")
