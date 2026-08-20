@@ -221,3 +221,17 @@ jobs:
             --pr-title "$env:PR_TITLE" `
             --head-sha "$env:HEAD_SHA" `
             --review-file "$env:REVIEW_FILE"
+
+      # Debugging aid: the job workspace under runner.temp is cleaned up once the
+      # job finishes, which makes it hard to inspect intermediate pipeline output
+      # after the fact. Keep a copy of the last run's JSON artifacts regardless of
+      # whether earlier steps failed.
+      - name: Preserve last-run debug artifacts
+        if: always()
+        env:
+          TMP_DIR: ${{ runner.temp }}
+        run: |
+          $debug = "C:\gitea\ai-review\debug-last-run"
+          Remove-Item -Recurse -Force $debug -ErrorAction SilentlyContinue
+          New-Item -ItemType Directory -Force $debug | Out-Null
+          Copy-Item "$env:TMP_DIR\gitea-auto-review-*.json" $debug -ErrorAction SilentlyContinue
