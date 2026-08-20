@@ -283,3 +283,22 @@ def test_renderer_states_when_no_reproduced_problem_survives() -> None:
     rendered = render_markdown(review, 1, "a" * 40, "테스트")
 
     assert "재현된 문제\n• 자동 재현 및 2차 검증을 통과" in rendered
+
+
+def test_renderer_lists_reproduction_conditions() -> None:
+    payload = impact_payload()
+    payload["findings"] = []
+    payload["reproduced_findings"] = [{
+        "problem": "분할 합계 불일치",
+        "impact": "ERP 실적 누락",
+        "evidence": ["product/models.py:1"],
+        "condition": "단일 PO 작업지시\n양품 합계 0\nERP 일괄전송 실행",
+        "oracle": "원본 합계 보존",
+        "expected": "합계 3",
+        "observed": "합계 0",
+        "cleanup_verified": True,
+    }]
+
+    rendered = render_markdown(Review.from_json(json.dumps(payload)), 1, "a" * 40, "테스트")
+
+    assert "재현에 사용한 조건\n  1. 단일 PO 작업지시\n  2. 양품 합계 0\n  3. ERP 일괄전송 실행" in rendered

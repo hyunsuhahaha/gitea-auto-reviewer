@@ -31,6 +31,7 @@ def test_reproduction_plan_requires_korean_user_visible_text() -> None:
     prompt = build_plan_prompt(Review.from_json(json.dumps(impact_payload())), SHA)
     assert "condition" in prompt and "expected" in prompt and "observed" in prompt
     assert "must be Korean" in prompt
+    assert "1-6 concise, unnumbered lines" in prompt
 
 
 def test_reproduction_requires_one_result_per_planned_case() -> None:

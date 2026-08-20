@@ -559,7 +559,10 @@ def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...]) -> list
     for finding in findings:
         lines.append(f"• {finding.problem}")
         lines.append(f"  영향: {finding.impact}")
-        lines.append(f"  재현 조건: {finding.condition}")
+        lines.append("  재현에 사용한 조건")
+        lines.extend(f"  {index}. {condition}" for index, condition in enumerate(
+            (line.strip() for line in finding.condition.splitlines() if line.strip()), start=1
+        ))
         lines.append(f"  관찰 결과: {finding.observed}")
         lines.append("  롤백 검증: 통과")
         lines.extend(f"  └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
