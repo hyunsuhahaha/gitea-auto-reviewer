@@ -52,6 +52,9 @@ pull_request_target on trusted base workflow
                test DB + transaction.atomic()
                forced rollback + cleanup check
                           │
+                Codex rejection pass (low)
+                reads reproduction evidence
+                          │
               confirmed findings only
                      review.json
                           │
@@ -70,6 +73,7 @@ gitea-auto-reviewer evidence ... # trusted internal PR execution, sanitized chil
 gitea-auto-reviewer review ...   # Codex session, consumes evidence, no Gitea credential
 gitea-auto-reviewer plan ...     # Codex writes up to 3 objective reproduction cases
 gitea-auto-reviewer reproduce ...# CI Python executes cases and forces DB rollback
+gitea-auto-reviewer verify ...   # low-effort Codex pass challenges reproduced findings
 gitea-auto-reviewer finalize ... # retain confirmed + cleanup-verified findings only
 gitea-auto-reviewer comment ...  # Gitea credential, never invokes Codex or PR code
 ```
@@ -222,8 +226,8 @@ migration, and pytest duration visible independently without changing the
 final evidence consumed by Codex.
 
 The first Codex pass uses high reasoning effort for repository and boundary
-analysis. The independent rejection pass uses low effort because it only
-disproves or retains existing findings.
+analysis. After candidate findings are executed, the independent rejection
+pass uses low effort to disprove or retain only those reproduced findings.
 
 Generate a structured review:
 
@@ -264,10 +268,17 @@ gitea-auto-reviewer reproduce `
   --require-setting MAIN_APP_RUN=false `
   --output C:\runner\temp\reproduction-evidence.json
 
+gitea-auto-reviewer verify `
+  --head-sha 2222222222222222222222222222222222222222 `
+  --review-file C:\runner\temp\candidate-review.json `
+  --reproduction-file C:\runner\temp\reproduction-evidence.json `
+  --output C:\runner\temp\verification.json
+
 gitea-auto-reviewer finalize `
   --head-sha 2222222222222222222222222222222222222222 `
   --review-file C:\runner\temp\candidate-review.json `
   --reproduction-file C:\runner\temp\reproduction-evidence.json `
+  --verification-file C:\runner\temp\verification.json `
   --output C:\runner\temp\review.json
 ```
 

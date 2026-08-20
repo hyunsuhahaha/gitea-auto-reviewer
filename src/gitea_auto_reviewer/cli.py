@@ -5,17 +5,18 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 
 from .codex import assert_logged_in, run_codex_review
 from .evidence import Evidence, collect_evidence, merge_evidence
-from .git_context import build_prompt, build_verification_prompt, collect_context, validate_sha
+from .git_context import build_prompt, collect_context, validate_sha
 from .gitea import GiteaClient
 from .gitnexus import index_repository
-from .review import Review, TestResult, render_markdown, validate_grounding, validate_verification
-from .reproduction import (ReproductionEvidence, ReproductionPlan, finalize_review,
-                           plan_reproductions, run_reproductions)
+from .review import Review, TestResult, render_markdown, validate_grounding
+from .reproduction import (ReproductionEvidence, ReproductionPlan, VerificationDecision,
+                           finalize_review, plan_reproductions, run_reproductions,
+                           verify_reproductions)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -78,10 +79,20 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce.add_argument("--timeout", type=int, default=180)
     reproduce.add_argument("--require-setting", action="append", default=[])
 
+    verify = subparsers.add_parser("verify", help="adversarially verify reproduced findings")
+    verify.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
+    verify.add_argument("--review-file", type=Path, required=True)
+    verify.add_argument("--reproduction-file", type=Path, required=True)
+    verify.add_argument("--output", type=Path, default=Path("verification.json"))
+    verify.add_argument("--repo-dir", type=Path, default=Path.cwd())
+    verify.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
+    verify.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
+
     finalize = subparsers.add_parser("finalize", help="publish only rollback-verified findings")
     finalize.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
     finalize.add_argument("--review-file", type=Path, required=True)
     finalize.add_argument("--reproduction-file", type=Path, required=True)
+    finalize.add_argument("--verification-file", type=Path, required=True)
     finalize.add_argument("--output", type=Path, default=Path("review.json"))
 
     comment = subparsers.add_parser("comment", help="validate and post a review.json")
@@ -141,31 +152,12 @@ def review_command(arguments: argparse.Namespace) -> None:
         "tests": asdict(_evidence_tests(evidence)),
         "reproduced_findings": [],
     }
-    draft = run_codex_review(
+    result = run_codex_review(
         prompt,
         arguments.repo_dir.resolve(),
         arguments.codex_binary,
         fixed_fields=fixed_fields,
         gitnexus_binary=arguments.gitnexus_binary,
-    )
-    result = run_codex_review(
-        build_verification_prompt(prompt, draft.to_json()),
-        arguments.repo_dir.resolve(),
-        arguments.codex_binary,
-        fixed_fields=fixed_fields,
-        reasoning_effort="low",
-        gitnexus_binary=arguments.gitnexus_binary,
-    )
-    validate_verification(draft, result)
-    result = replace(
-        draft,
-        risk=result.risk,
-        risk_confidence=result.risk_confidence,
-        risk_evidence=result.risk_evidence,
-        findings=result.findings,
-        external_integration=result.external_integration,
-        external_integration_reason=result.external_integration_reason,
-        external_integration_evidence=result.external_integration_evidence,
     )
     validate_grounding(result, arguments.repo_dir.resolve(), context.policy)
     arguments.output.write_text(result.to_json() + "\n", encoding="utf-8")
@@ -275,10 +267,26 @@ def finalize_command(arguments: argparse.Namespace) -> None:
     head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
     review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
     evidence = ReproductionEvidence.from_json(arguments.reproduction_file.read_text(encoding="utf-8"))
+    decision = VerificationDecision.from_json(arguments.verification_file.read_text(encoding="utf-8"), evidence)
     if evidence.head_sha != head_sha:
         raise ValueError("reproduction evidence belongs to a different PR head SHA")
-    arguments.output.write_text(finalize_review(review, evidence).to_json() + "\n", encoding="utf-8")
+    if decision.head_sha != head_sha:
+        raise ValueError("verification belongs to a different PR head SHA")
+    arguments.output.write_text(finalize_review(review, evidence, decision).to_json() + "\n", encoding="utf-8")
     print(f"Final review written to {arguments.output}")
+
+
+def verify_command(arguments: argparse.Namespace) -> None:
+    head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
+    review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
+    evidence = ReproductionEvidence.from_json(arguments.reproduction_file.read_text(encoding="utf-8"))
+    if evidence.head_sha != head_sha:
+        raise ValueError("reproduction evidence belongs to a different PR head SHA")
+    assert_logged_in(arguments.codex_binary)
+    decision = verify_reproductions(review, evidence, arguments.repo_dir.resolve(),
+                                    arguments.codex_binary, arguments.gitnexus_binary)
+    arguments.output.write_text(decision.to_json() + "\n", encoding="utf-8")
+    print(f"Verification written to {arguments.output}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -298,6 +306,8 @@ def main(argv: list[str] | None = None) -> int:
             plan_command(arguments)
         elif arguments.command == "reproduce":
             reproduce_command(arguments)
+        elif arguments.command == "verify":
+            verify_command(arguments)
         elif arguments.command == "finalize":
             finalize_command(arguments)
         else:

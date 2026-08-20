@@ -35,6 +35,19 @@ PLAN_SCHEMA: dict[str, Any] = {
     },
 }
 
+VERIFICATION_SCHEMA: dict[str, Any] = {
+    "type": "object", "additionalProperties": False,
+    "required": ["version", "head_sha", "accepted_finding_indices"],
+    "properties": {
+        "version": {"type": "integer", "const": 1},
+        "head_sha": {"type": "string"},
+        "accepted_finding_indices": {
+            "type": "array", "maxItems": 3,
+            "items": {"type": "integer", "minimum": 0, "maximum": 4},
+        },
+    },
+}
+
 
 @dataclass(frozen=True)
 class ReproductionCase:
@@ -108,6 +121,32 @@ class ReproductionEvidence:
         return json.dumps({"version": 1, "head_sha": self.head_sha, "results": [asdict(item) for item in self.results]}, ensure_ascii=False, indent=2)
 
 
+@dataclass(frozen=True)
+class VerificationDecision:
+    head_sha: str
+    accepted_finding_indices: tuple[int, ...]
+
+    @classmethod
+    def from_json(cls, raw: str, evidence: ReproductionEvidence) -> "VerificationDecision":
+        value = json.loads(raw)
+        if not isinstance(value, dict) or set(value) != {"version", "head_sha", "accepted_finding_indices"} or value["version"] != 1:
+            raise ValueError("invalid reproduction verification")
+        indexes = value["accepted_finding_indices"]
+        confirmed = {item.finding_index for item in evidence.results
+                     if item.status == "confirmed" and item.cleanup_verified}
+        if (not isinstance(indexes, list) or any(type(index) is not int for index in indexes)
+                or len(indexes) != len(set(indexes)) or not set(indexes) <= confirmed):
+            raise ValueError("verification may accept only confirmed findings")
+        head_sha = validate_sha(value["head_sha"])
+        if head_sha != evidence.head_sha:
+            raise ValueError("verification belongs to a different PR head SHA")
+        return cls(head_sha, tuple(indexes))
+
+    def to_json(self) -> str:
+        return json.dumps({"version": 1, "head_sha": self.head_sha,
+                           "accepted_finding_indices": list(self.accepted_finding_indices)}, indent=2)
+
+
 def build_plan_prompt(review: Review, head_sha: str) -> str:
     return f"""You are planning rollback-only reproductions for candidate code-review findings.
 The repository is already checked out at PR head {head_sha}. Inspect it, including GitNexus MCP context.
@@ -131,6 +170,27 @@ def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_bi
     raw = run_codex_json(build_plan_prompt(review, head_sha), PLAN_SCHEMA, repository, codex_binary,
                          fixed_fields={"version": 1, "head_sha": head_sha}, gitnexus_binary=gitnexus_binary)
     return ReproductionPlan.from_json(raw, len(review.findings))
+
+
+def verify_reproductions(review: Review, evidence: ReproductionEvidence, repository: Path,
+                         codex_binary: str, gitnexus_binary: str) -> VerificationDecision:
+    confirmed = [item for item in evidence.results if item.status == "confirmed" and item.cleanup_verified]
+    if not confirmed:
+        return VerificationDecision(evidence.head_sha, ())
+    prompt = f"""You are the second, adversarial verification pass for code-review findings.
+Only the candidate findings listed in the reproduction evidence were executed against the test database.
+For each confirmed result, inspect the repository and GitNexus again and try to disprove that the observed result supports the exact candidate problem and impact. Accept an index only when the oracle is objective, the observation demonstrates that exact problem, cleanup was verified, and no concrete code path invalidates the conclusion. Never add, rewrite, or accept an unconfirmed finding. Silence is valid.
+
+Candidate review:
+{review.to_json()}
+
+Reproduction evidence:
+{evidence.to_json()}
+"""
+    raw = run_codex_json(prompt, VERIFICATION_SCHEMA, repository, codex_binary,
+                         fixed_fields={"version": 1, "head_sha": evidence.head_sha},
+                         reasoning_effort="low", gitnexus_binary=gitnexus_binary)
+    return VerificationDecision.from_json(raw, evidence)
 
 
 FORBIDDEN_IMPORTS = {"subprocess", "socket", "requests", "httpx", "urllib", "ftplib", "pathlib", "shutil", "os"}
@@ -196,10 +256,14 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
     return ReproductionEvidence(plan.head_sha, tuple(results))
 
 
-def finalize_review(review: Review, evidence: ReproductionEvidence) -> Review:
+def finalize_review(review: Review, evidence: ReproductionEvidence,
+                    decision: VerificationDecision | None = None) -> Review:
+    accepted = (set(decision.accepted_finding_indices) if decision is not None else
+                {item.finding_index for item in evidence.results
+                 if item.status == "confirmed" and item.cleanup_verified})
     confirmed: list[ReproducedFinding] = []
     for result in evidence.results:
-        if result.status != "confirmed" or not result.cleanup_verified:
+        if result.status != "confirmed" or not result.cleanup_verified or result.finding_index not in accepted:
             continue
         try:
             finding = review.findings[result.finding_index]

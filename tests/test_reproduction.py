@@ -4,9 +4,11 @@ import pytest
 
 from gitea_auto_reviewer.reproduction import (
     PLAN_SCHEMA,
+    VERIFICATION_SCHEMA,
     ReproductionEvidence,
     ReproductionPlan,
     ReproductionResult,
+    VerificationDecision,
     finalize_review,
     validate_script,
 )
@@ -17,7 +19,7 @@ from gitea_auto_reviewer.review import Review, render_markdown
 SHA = "a" * 40
 
 
-@pytest.mark.parametrize("schema", [PLAN_SCHEMA])
+@pytest.mark.parametrize("schema", [PLAN_SCHEMA, VERIFICATION_SCHEMA])
 def test_structured_output_const_nodes_declare_a_type(schema) -> None:
     def visit(value):
         if isinstance(value, dict):
@@ -68,3 +70,19 @@ def test_finalize_suppresses_refuted_or_unverified_findings() -> None:
     final = finalize_review(review, evidence)
     assert final.risk == "low"
     assert final.findings == final.reproduced_findings == ()
+
+
+def test_second_pass_can_only_accept_confirmed_reproductions() -> None:
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(0, "confirmed", "조건", "정상", "정상", "오류", True, 0.1),
+        ReproductionResult(1, "refuted", "조건", "정상", "정상", "정상", True, 0.1),
+    ))
+    decision = VerificationDecision.from_json(json.dumps({
+        "version": 1, "head_sha": SHA, "accepted_finding_indices": [0],
+    }), evidence)
+    assert decision.accepted_finding_indices == (0,)
+
+    with pytest.raises(ValueError, match="only confirmed"):
+        VerificationDecision.from_json(json.dumps({
+            "version": 1, "head_sha": SHA, "accepted_finding_indices": [1],
+        }), evidence)

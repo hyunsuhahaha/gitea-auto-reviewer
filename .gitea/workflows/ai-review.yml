@@ -118,7 +118,7 @@ jobs:
             --input "$env:PYTEST_FILE" `
             --output "$env:EVIDENCE_FILE"
 
-      - name: Generate read-only Codex review
+      - name: Generate first-pass Codex findings
         env:
           GITEA_TOKEN: ""
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
@@ -171,17 +171,34 @@ jobs:
             --require-setting "MAIN_APP_RUN=false" `
             --output "$env:REPRODUCTION_FILE"
 
+      - name: Verify reproduced findings with Codex
+        env:
+          GITEA_TOKEN: ""
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+          CANDIDATE_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
+          REPRODUCTION_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction.json
+          VERIFICATION_FILE: ${{ runner.temp }}\gitea-auto-review-verification.json
+        run: |
+          & $env:REVIEWER_EXE verify `
+            --head-sha "$env:HEAD_SHA" `
+            --review-file "$env:CANDIDATE_FILE" `
+            --reproduction-file "$env:REPRODUCTION_FILE" `
+            --gitnexus-binary "$env:GITNEXUS_EXE" `
+            --output "$env:VERIFICATION_FILE"
+
       - name: Keep only reproduced findings
         env:
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           CANDIDATE_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
           REPRODUCTION_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction.json
+          VERIFICATION_FILE: ${{ runner.temp }}\gitea-auto-review-verification.json
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review.json
         run: |
           & $env:REVIEWER_EXE finalize `
             --head-sha "$env:HEAD_SHA" `
             --review-file "$env:CANDIDATE_FILE" `
             --reproduction-file "$env:REPRODUCTION_FILE" `
+            --verification-file "$env:VERIFICATION_FILE" `
             --output "$env:REVIEW_FILE"
 
       - name: Post or update PR comment
