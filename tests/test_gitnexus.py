@@ -22,8 +22,9 @@ def test_index_is_bound_to_exact_head(monkeypatch, tmp_path: Path) -> None:
 
     assert calls[1] == [
         "gitnexus", "analyze", str(tmp_path.resolve()),
-        "--skip-embeddings", "--skip-agents-md", "--skip-skills",
+        "--skip-agents-md", "--skip-skills",
     ]
+    assert "--skip-embeddings" not in calls[1]
 
 
 def test_index_rejects_wrong_head(monkeypatch, tmp_path: Path) -> None:
