@@ -110,7 +110,7 @@ def collect_evidence(repository: Path, head_sha: str, python: str = "python", ti
                 migration = Check("pass", "Skipped: no Python files changed")
             else:
                 migration = _run_migration(
-                    [python, "manage.py", "makemigrations", "--check", "--dry-run"],
+                    [python, "manage.py", "makemigrations", "--check", "--dry-run", "--noinput"],
                     repository, timeout, environment,
                 )
         return Evidence(head_sha,
@@ -149,7 +149,7 @@ def _run(command: list[str], repository: Path, timeout: int, environment: dict[s
     try:
         result = subprocess.run(command, cwd=repository, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=timeout, check=False,
-                                env=environment)
+                                env=environment, stdin=subprocess.DEVNULL)
     except (OSError, subprocess.TimeoutExpired) as exc:
         print(f"Check stopped after {time.monotonic() - started:.1f}s: {type(exc).__name__}", flush=True)
         return Check("error", type(exc).__name__)
