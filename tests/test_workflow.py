@@ -22,3 +22,5 @@ def test_workflow_supports_manual_review_of_existing_pr() -> None:
     publish = workflow.index("Keep only reproduced findings")
     assert first < reproduce < verify < publish
     assert 'gitea-auto-review*.json' in workflow
+    assert 'debug-runs' in workflow
+    assert '$env:GITHUB_RUN_ID' in workflow

@@ -253,6 +253,12 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
                 status, expected, observed, cleanup = "inconclusive", case.oracle, type(exc).__name__, False
             results.append(ReproductionResult(case.finding_index, status, case.condition, case.oracle,
                                               expected, observed, cleanup, round(time.monotonic() - started, 3)))
+    return _complete_evidence(plan, results)
+
+
+def _complete_evidence(plan: ReproductionPlan, results: list[ReproductionResult]) -> ReproductionEvidence:
+    if len(results) != len(plan.cases):
+        raise RuntimeError("reproduction result count does not match the plan")
     return ReproductionEvidence(plan.head_sha, tuple(results))
 
 

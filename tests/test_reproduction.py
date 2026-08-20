@@ -6,11 +6,13 @@ from gitea_auto_reviewer.reproduction import (
     PLAN_SCHEMA,
     VERIFICATION_SCHEMA,
     ReproductionEvidence,
+    ReproductionCase,
     ReproductionPlan,
     ReproductionResult,
     VerificationDecision,
     _RUNNER_SOURCE,
     finalize_review,
+    _complete_evidence,
     validate_script,
 )
 from test_review import impact_payload
@@ -22,6 +24,14 @@ SHA = "a" * 40
 
 def test_reproduction_runner_imports_project_from_checkout_root() -> None:
     assert 'sys.path.insert(0, str(Path.cwd()))' in _RUNNER_SOURCE
+
+
+def test_reproduction_requires_one_result_per_planned_case() -> None:
+    plan = ReproductionPlan(SHA, (
+        ReproductionCase(0, "condition", "oracle", "def reproduce():\n    return {}\n"),
+    ))
+    with pytest.raises(RuntimeError, match="result count"):
+        _complete_evidence(plan, [])
 
 
 @pytest.mark.parametrize("schema", [PLAN_SCHEMA, VERIFICATION_SCHEMA])
