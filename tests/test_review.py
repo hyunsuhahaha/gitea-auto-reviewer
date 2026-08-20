@@ -51,6 +51,7 @@ def impact_payload() -> dict[str, object]:
             "evidence": ["product/models.py:31", "product/models.py:44", "product/services.py:18"],
             "policy_quote": None,
         }],
+        "reproduced_findings": [],
         "affected_files": [{
             "path": "app/views/product_admin.py",
             "reason": "Product 생성 호출자가 새 필드의 영향을 받음",
@@ -74,7 +75,14 @@ def test_codex_schema_does_not_mix_ref_with_other_keywords() -> None:
 
 
 def test_review_renders_compact_change_impact_summary() -> None:
-    review = Review.from_json(json.dumps(impact_payload()))
+    payload = impact_payload()
+    finding = payload["findings"][0]
+    payload["reproduced_findings"] = [{
+        "problem": finding["problem"], "impact": finding["impact"], "evidence": finding["evidence"],
+        "condition": "remark 없이 기존 생성 경로 호출", "oracle": "기존 생성 요청이 성공해야 함",
+        "expected": "생성 성공", "observed": "필수 필드 오류 응답", "cleanup_verified": True,
+    }]
+    review = Review.from_json(json.dumps(payload))
 
     rendered = render_markdown(review, 214, "a" * 40, "상품 비고 기능 추가")
 
@@ -89,19 +97,19 @@ def test_review_renders_compact_change_impact_summary() -> None:
     assert "Migration check 누락 없음" in rendered
     assert "테스트" in rendered and "147/147 PASS" in rendered
     assert "위험도" in rendered and "🟠 HIGH · 근거 HIGH" in rendered
-    assert "주의" in rendered
+    assert "재현된 문제" in rendered
     assert "수정:" not in rendered
     assert "완료:" not in rendered
     assert "└ product/models.py:31" in rendered
     assert "유용했다면" not in rendered
     assert "노이즈였다면" not in rendered
     assert "Critical" not in rendered
-    warning = rendered[rendered.index("주의"):rendered.index("영향 파일")]
+    warning = rendered[rendered.index("재현된 문제"):rendered.index("영향 파일")]
     assert warning.count("└ product/models.py") == 1
     assert "product/models.py:31" not in warning
     assert "product/models.py:44" not in warning
     assert "└ product/services.py" in warning
-    assert rendered.rfind("영향 파일") > rendered.rfind("주의")
+    assert rendered.rfind("영향 파일") > rendered.rfind("재현된 문제")
     assert "• app/views/product_admin.py" in rendered
     assert "Product 생성 호출자가 새 필드의 영향을 받음 — app/views/product_admin.py:52" in rendered
 

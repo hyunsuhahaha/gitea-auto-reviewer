@@ -65,13 +65,31 @@ def run_codex_review(
     reasoning_effort: str = "high",
     gitnexus_binary: str = "gitnexus",
 ) -> Review:
+    raw = run_codex_json(
+        prompt, REVIEW_JSON_SCHEMA, repository, codex_binary, temp_root,
+        fixed_fields, reasoning_effort, gitnexus_binary,
+    )
+    return Review.from_json(raw)
+
+
+def run_codex_json(
+    prompt: str,
+    schema: dict[str, Any],
+    repository: Path,
+    codex_binary: str = "codex",
+    temp_root: Path | None = None,
+    fixed_fields: dict[str, Any] | None = None,
+    reasoning_effort: str = "high",
+    gitnexus_binary: str = "gitnexus",
+) -> str:
+    """Run one read-only Codex turn and return validated-shape JSON text."""
     if reasoning_effort not in {"low", "medium", "high"}:
         raise ValueError("reasoning_effort must be low, medium, or high")
     with tempfile.TemporaryDirectory(prefix="gitea-review-", dir=temp_root) as directory:
         workdir = Path(directory)
         schema_path = workdir / "review-schema.json"
         output_path = workdir / "review.json"
-        schema_path.write_text(json.dumps(REVIEW_JSON_SCHEMA), encoding="utf-8")
+        schema_path.write_text(json.dumps(schema), encoding="utf-8")
         command = [
             *executable_command(codex_binary),
             "exec",
@@ -109,13 +127,13 @@ def run_codex_review(
         if result.returncode != 0:
             detail = " ".join(result.stderr.split())[-2000:]
             suffix = f": {detail}" if detail else ""
-            raise RuntimeError(f"Codex review failed with exit code {result.returncode}{suffix}")
+            raise RuntimeError(f"Codex analysis failed with exit code {result.returncode}{suffix}")
         try:
             raw = output_path.read_text(encoding="utf-8")
         except FileNotFoundError as exc:
-            raise RuntimeError("Codex did not produce a review result") from exc
+            raise RuntimeError("Codex did not produce a structured result") from exc
         if fixed_fields:
             value = json.loads(raw)
             value.update(fixed_fields)
             raw = json.dumps(value)
-        return Review.from_json(raw)
+        return raw

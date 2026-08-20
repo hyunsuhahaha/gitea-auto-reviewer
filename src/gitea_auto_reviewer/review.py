@@ -27,6 +27,7 @@ FIELDS = {
     "risk_evidence",
     "key_changes",
     "findings",
+    "reproduced_findings",
     "affected_files",
 }
 
@@ -67,6 +68,7 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
         "risk_evidence": {"$ref": "#/$defs/references"},
         "key_changes": {"$ref": "#/$defs/requiredItems"},
         "findings": {"$ref": "#/$defs/findings"},
+        "reproduced_findings": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/reproducedFinding"}},
         "affected_files": {"$ref": "#/$defs/affectedFiles"},
     },
     "$defs": {
@@ -128,6 +130,20 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
                     "reason": {"type": "string", "minLength": 1, "maxLength": 500},
                     "evidence": {"$ref": "#/$defs/requiredReferences"},
                 },
+            },
+        },
+        "reproducedFinding": {
+            "type": "object", "additionalProperties": False,
+            "required": ["problem", "impact", "evidence", "condition", "oracle", "expected", "observed", "cleanup_verified"],
+            "properties": {
+                "problem": {"type": "string", "minLength": 1, "maxLength": 500},
+                "impact": {"type": "string", "minLength": 1, "maxLength": 500},
+                "evidence": {"$ref": "#/$defs/requiredReferences"},
+                "condition": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "oracle": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "expected": {"type": "string", "maxLength": 1000},
+                "observed": {"type": "string", "minLength": 1, "maxLength": 1000},
+                "cleanup_verified": {"const": True},
             },
         },
     },
@@ -207,6 +223,28 @@ class AffectedFile:
 
 
 @dataclass(frozen=True)
+class ReproducedFinding:
+    problem: str
+    impact: str
+    evidence: tuple[str, ...]
+    condition: str
+    oracle: str
+    expected: str
+    observed: str
+    cleanup_verified: bool
+
+    @classmethod
+    def from_value(cls, value: object) -> "ReproducedFinding":
+        names = {"problem", "impact", "evidence", "condition", "oracle", "expected", "observed", "cleanup_verified"}
+        if not isinstance(value, dict) or set(value) != names or value["cleanup_verified"] is not True:
+            raise ValueError("invalid reproduced finding")
+        return cls(_text(value["problem"], "problem"), _text(value["impact"], "impact"),
+                   _references(value["evidence"], True), _text(value["condition"], "condition"),
+                   _text(value["oracle"], "oracle"), _short_text(value["expected"], "expected", empty=True),
+                   _text(value["observed"], "observed"), True)
+
+
+@dataclass(frozen=True)
 class Review:
     changed_files: int
     changed_file_paths: tuple[str, ...]
@@ -226,6 +264,7 @@ class Review:
     risk_evidence: tuple[str, ...]
     key_changes: tuple[str, ...]
     findings: tuple[Finding, ...]
+    reproduced_findings: tuple[ReproducedFinding, ...]
     affected_files: tuple[AffectedFile, ...]
 
     @classmethod
@@ -234,6 +273,9 @@ class Review:
             value = json.loads(raw)
         except json.JSONDecodeError as exc:
             raise ValueError("Codex output is not valid JSON") from exc
+        # Accept v0.1 stored reviews while the CLI always emits the v0.2 field.
+        if isinstance(value, dict) and "reproduced_findings" not in value:
+            value["reproduced_findings"] = []
         if not isinstance(value, dict) or set(value) != FIELDS:
             raise ValueError("review output does not match the change-impact schema")
         changed_files = value["changed_files"]
@@ -289,12 +331,13 @@ class Review:
             risk_evidence=risk_evidence,
             key_changes=_items(value["key_changes"], "key_changes", required=True),
             findings=_findings(value["findings"]),
+            reproduced_findings=_reproduced_findings(value["reproduced_findings"]),
             affected_files=_affected_files(value["affected_files"], changed_file_paths),
         )
 
     def to_json(self) -> str:
         value = asdict(self)
-        for name in ("changed_file_paths", "external_integration_evidence", "risk_evidence", "key_changes", "findings", "affected_files"):
+        for name in ("changed_file_paths", "external_integration_evidence", "risk_evidence", "key_changes", "findings", "reproduced_findings", "affected_files"):
             value[name] = list(value[name])
         return json.dumps(value, ensure_ascii=False, indent=2)
 
@@ -341,6 +384,12 @@ def _findings(value: object) -> tuple[Finding, ...]:
     return tuple(Finding.from_value(item) for item in value)
 
 
+def _reproduced_findings(value: object) -> tuple[ReproducedFinding, ...]:
+    if not isinstance(value, list) or len(value) > 3:
+        raise ValueError("reproduced_findings must contain 0-3 items")
+    return tuple(ReproducedFinding.from_value(item) for item in value)
+
+
 def _impact_details(value: object) -> tuple[ImpactDetail, ...]:
     if not isinstance(value, list) or len(value) > 5:
         raise ValueError("impact details must contain 0-5 items")
@@ -361,6 +410,12 @@ def _affected_files(value: object, changed_paths: tuple[str, ...]) -> tuple[Affe
 
 def _text(value: object, name: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 500:
+        raise ValueError(f"invalid {name}")
+    return value.strip()
+
+
+def _short_text(value: object, name: str, empty: bool = False) -> str:
+    if not isinstance(value, str) or len(value) > 1000 or (not empty and not value.strip()):
         raise ValueError(f"invalid {name}")
     return value.strip()
 
@@ -388,6 +443,7 @@ def validate_grounding(review: Review, repository: Path, policy: str) -> None:
         *(ref for item in review.data_change_details for ref in item.evidence),
         *review.risk_evidence,
         *(ref for item in review.findings for ref in item.evidence),
+        *(ref for item in review.reproduced_findings for ref in item.evidence),
         *(ref for item in review.affected_files for ref in item.evidence),
     ):
         relative, _, line_text = reference.rpartition(":")
@@ -479,7 +535,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         "주요 변경",
         *[f"• {item}" for item in review.key_changes],
         "",
-        *(_finding_section(review.findings) if review.findings else []),
+        *(_reproduced_finding_section(review.reproduced_findings) if review.reproduced_findings else []),
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
@@ -493,6 +549,18 @@ def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
         lines.append(f"  영향: {finding.impact}")
         if finding.policy_quote:
             lines.append(f'  규칙: "{finding.policy_quote}"')
+        lines.extend(f"  └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
+    return ["", *lines]
+
+
+def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...]) -> list[str]:
+    lines = ["재현된 문제"]
+    for finding in findings:
+        lines.append(f"• {finding.problem}")
+        lines.append(f"  영향: {finding.impact}")
+        lines.append(f"  재현 조건: {finding.condition}")
+        lines.append(f"  관찰 결과: {finding.observed}")
+        lines.append("  롤백 검증: 통과")
         lines.extend(f"  └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
     return ["", *lines]
 

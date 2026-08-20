@@ -14,6 +14,8 @@ from .git_context import build_prompt, build_verification_prompt, collect_contex
 from .gitea import GiteaClient
 from .gitnexus import index_repository
 from .review import Review, TestResult, render_markdown, validate_grounding, validate_verification
+from .reproduction import (ReproductionEvidence, ReproductionPlan, finalize_review,
+                           plan_reproductions, run_reproductions)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,6 +48,29 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     review.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
     review.add_argument("--max-diff-bytes", type=int, default=1_000_000)
+
+    plan = subparsers.add_parser("plan", help="ask Codex for rollback-only reproduction cases")
+    plan.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
+    plan.add_argument("--review-file", type=Path, required=True)
+    plan.add_argument("--output", type=Path, default=Path("reproduction-plan.json"))
+    plan.add_argument("--repo-dir", type=Path, default=Path.cwd())
+    plan.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
+    plan.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
+
+    reproduce = subparsers.add_parser("reproduce", help="execute reproduction cases with forced rollback")
+    reproduce.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
+    reproduce.add_argument("--plan-file", type=Path, required=True)
+    reproduce.add_argument("--output", type=Path, default=Path("reproduction-evidence.json"))
+    reproduce.add_argument("--repo-dir", type=Path, default=Path.cwd())
+    reproduce.add_argument("--python", required=True)
+    reproduce.add_argument("--timeout", type=int, default=180)
+    reproduce.add_argument("--require-setting", action="append", default=[])
+
+    finalize = subparsers.add_parser("finalize", help="publish only rollback-verified findings")
+    finalize.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
+    finalize.add_argument("--review-file", type=Path, required=True)
+    finalize.add_argument("--reproduction-file", type=Path, required=True)
+    finalize.add_argument("--output", type=Path, default=Path("review.json"))
 
     comment = subparsers.add_parser("comment", help="validate and post a review.json")
     comment.add_argument("--gitea-url", default=os.getenv("GITEA_URL"))
@@ -102,6 +127,7 @@ def review_command(arguments: argparse.Namespace) -> None:
             evidence.migration_check.status
         ],
         "tests": asdict(_evidence_tests(evidence)),
+        "reproduced_findings": [],
     }
     draft = run_codex_review(
         prompt,
@@ -183,6 +209,37 @@ def comment_command(arguments: argparse.Namespace) -> None:
     print(f"PR comment {action}")
 
 
+def plan_command(arguments: argparse.Namespace) -> None:
+    head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
+    review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
+    assert_logged_in(arguments.codex_binary)
+    plan = plan_reproductions(review, head_sha, arguments.repo_dir.resolve(),
+                              arguments.codex_binary, arguments.gitnexus_binary)
+    arguments.output.write_text(plan.to_json() + "\n", encoding="utf-8")
+    print(f"Reproduction plan written to {arguments.output}")
+
+
+def reproduce_command(arguments: argparse.Namespace) -> None:
+    head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
+    plan = ReproductionPlan.from_json(arguments.plan_file.read_text(encoding="utf-8"), 5)
+    if plan.head_sha != head_sha:
+        raise ValueError("reproduction plan belongs to a different PR head SHA")
+    evidence = run_reproductions(plan, arguments.repo_dir.resolve(), arguments.python,
+                                 arguments.timeout, tuple(arguments.require_setting))
+    arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
+    print(f"Reproduction evidence written to {arguments.output}")
+
+
+def finalize_command(arguments: argparse.Namespace) -> None:
+    head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
+    review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
+    evidence = ReproductionEvidence.from_json(arguments.reproduction_file.read_text(encoding="utf-8"))
+    if evidence.head_sha != head_sha:
+        raise ValueError("reproduction evidence belongs to a different PR head SHA")
+    arguments.output.write_text(finalize_review(review, evidence).to_json() + "\n", encoding="utf-8")
+    print(f"Final review written to {arguments.output}")
+
+
 def main(argv: list[str] | None = None) -> int:
     try:
         arguments = build_parser().parse_args(argv)
@@ -192,6 +249,12 @@ def main(argv: list[str] | None = None) -> int:
             evidence_command(arguments)
         elif arguments.command == "review":
             review_command(arguments)
+        elif arguments.command == "plan":
+            plan_command(arguments)
+        elif arguments.command == "reproduce":
+            reproduce_command(arguments)
+        elif arguments.command == "finalize":
+            finalize_command(arguments)
         else:
             comment_command(arguments)
         return 0

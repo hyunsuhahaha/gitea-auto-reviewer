@@ -63,7 +63,7 @@ jobs:
       - name: Generate read-only Codex review
         env:
           GITEA_TOKEN: ""
-          REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review.json
+          REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
           EVIDENCE_FILE: ${{ runner.temp }}\gitea-auto-review-evidence.json
           REPOSITORY: ${{ gitea.repository }}
           PR_NUMBER: ${{ gitea.event.pull_request.number }}
@@ -81,6 +81,49 @@ jobs:
             --head-sha "$env:HEAD_SHA" `
             --evidence-file "$env:EVIDENCE_FILE" `
             --gitnexus-binary "$env:GITNEXUS_EXE" `
+            --output "$env:REVIEW_FILE"
+
+      - name: Plan rollback-only reproductions
+        env:
+          GITEA_TOKEN: ""
+          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
+          PLAN_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction-plan.json
+        run: |
+          & $env:REVIEWER_EXE plan `
+            --head-sha "$env:HEAD_SHA" `
+            --review-file "$env:REVIEW_FILE" `
+            --gitnexus-binary "$env:GITNEXUS_EXE" `
+            --output "$env:PLAN_FILE"
+
+      # Executes selected Django code against the configured test DB. Every
+      # case runs in transaction.atomic(), is forced to roll back, and must
+      # pass a fresh-connection cleanup check before it can be published.
+      - name: Reproduce candidate findings with rollback
+        env:
+          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          PLAN_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction-plan.json
+          REPRODUCTION_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction.json
+        run: |
+          & $env:REVIEWER_EXE reproduce `
+            --head-sha "$env:HEAD_SHA" `
+            --plan-file "$env:PLAN_FILE" `
+            --python "$env:CI_PYTHON" `
+            --require-setting "ERP_LIVE_SEND=false" `
+            --require-setting "MAIN_APP_RUN=false" `
+            --output "$env:REPRODUCTION_FILE"
+
+      - name: Keep only reproduced findings
+        env:
+          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          CANDIDATE_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
+          REPRODUCTION_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction.json
+          REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review.json
+        run: |
+          & $env:REVIEWER_EXE finalize `
+            --head-sha "$env:HEAD_SHA" `
+            --review-file "$env:CANDIDATE_FILE" `
+            --reproduction-file "$env:REPRODUCTION_FILE" `
             --output "$env:REVIEW_FILE"
 
       - name: Post or update PR comment

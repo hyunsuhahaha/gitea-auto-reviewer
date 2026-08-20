@@ -10,7 +10,7 @@ It is an AI-assisted first-pass reviewer, not a merge gate. It can create or
 update one ordinary PR comment. It cannot approve, request changes, merge,
 push commits, or modify branch protection.
 
-## v0.1 flow
+## Review and reproduction flow
 
 ```text
 PR head ── existing Windows test runner
@@ -34,6 +34,15 @@ pull_request_target on trusted base workflow
                     sandbox: read-only
                     GitNexus MCP: yes
                           │
+                 candidate-review.json
+                          │
+                 Codex reproduction plan
+                          │
+               direct Django view/ORM calls
+               test DB + transaction.atomic()
+               forced rollback + cleanup check
+                          │
+              confirmed findings only
                      review.json
                           │
                     comment process
@@ -43,12 +52,15 @@ pull_request_target on trusted base workflow
                  create/update PR comment
 ```
 
-The three CLI processes run sequentially in one Windows job:
+The CLI stages run sequentially in one Windows job:
 
 ```bash
 gitea-auto-reviewer index ...    # build/update the PR-head code graph
 gitea-auto-reviewer evidence ... # trusted internal PR execution, sanitized child environment
 gitea-auto-reviewer review ...   # Codex session, consumes evidence, no Gitea credential
+gitea-auto-reviewer plan ...     # Codex writes up to 3 objective reproduction cases
+gitea-auto-reviewer reproduce ...# CI Python executes cases and forces DB rollback
+gitea-auto-reviewer finalize ... # retain confirmed + cleanup-verified findings only
 gitea-auto-reviewer comment ...  # Gitea credential, never invokes Codex or PR code
 ```
 
@@ -70,7 +82,7 @@ read-only. Deterministic execution remains the responsibility of CI.
 
 ## Scope and trust model
 
-v0.1 intentionally supports only:
+v0.2 intentionally supports only:
 
 - trusted, persistent, self-hosted runners;
 - private/internal repositories;
@@ -108,7 +120,7 @@ Install one audited release under the existing runner service account.
 Do this during runner provisioning, not from a pull request:
 
 ```bash
-python -m pip install "gitea-auto-reviewer==0.1.0"
+python -m pip install "gitea-auto-reviewer==0.2.0"
 ```
 
 For development before a package is published:
@@ -220,6 +232,39 @@ affected processes before drafting. The low-effort rejection pass can query
 the graph again to confirm or disprove findings. GitNexus supplies static
 change-impact evidence; the reviewer verifies publishable claims against real
 repository files and deterministic CI evidence.
+
+Generate and execute rollback-only reproductions before publishing:
+
+```powershell
+gitea-auto-reviewer plan `
+  --head-sha 2222222222222222222222222222222222222222 `
+  --review-file C:\runner\temp\candidate-review.json `
+  --output C:\runner\temp\reproduction-plan.json
+
+gitea-auto-reviewer reproduce `
+  --head-sha 2222222222222222222222222222222222222222 `
+  --plan-file C:\runner\temp\reproduction-plan.json `
+  --python .\.venv-ci\Scripts\python.exe `
+  --require-setting ERP_LIVE_SEND=false `
+  --require-setting MAIN_APP_RUN=false `
+  --output C:\runner\temp\reproduction-evidence.json
+
+gitea-auto-reviewer finalize `
+  --head-sha 2222222222222222222222222222222222222222 `
+  --review-file C:\runner\temp\candidate-review.json `
+  --reproduction-file C:\runner\temp\reproduction-evidence.json `
+  --output C:\runner\temp\review.json
+```
+
+The plan contains Python harnesses, but transaction and cleanup control are not
+delegated to the model. The fixed executor initializes Django, checks required
+runtime settings, opens `transaction.atomic()` for every configured Django DB,
+forces rollback, closes all DB
+connections, and verifies declared rows/fields again on a fresh connection.
+Only `confirmed` results whose cleanup checks pass are rendered under
+`재현된 문제`. Refuted, timed-out, exceptional, and cleanup-unverified cases are
+kept out of the PR comment. PostgreSQL sequence values can still have gaps;
+sequences are not transactional.
 
 Post or update the bot comment:
 
