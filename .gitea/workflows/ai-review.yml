@@ -3,6 +3,12 @@ name: Codex AI review
 on:
   pull_request_target:
     types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Existing PR number to review, including a merged PR
+        required: true
+        type: string
 
 # Windows Server trial profile for trusted, same-repository PRs only.
 permissions:
@@ -15,7 +21,7 @@ defaults:
 
 jobs:
   review:
-    if: ${{ gitea.event.pull_request.head.repo.full_name == gitea.repository }}
+    if: ${{ gitea.event_name == 'workflow_dispatch' || gitea.event.pull_request.head.repo.full_name == gitea.repository }}
     runs-on: ai-review-windows
     env:
       REVIEWER_EXE: C:\gitea\ai-review\.venv\Scripts\gitea-auto-reviewer.exe
@@ -23,21 +29,37 @@ jobs:
       CI_PYTHON: .\.venv-ci\Scripts\python.exe
       GITNEXUS_EXE: C:\Users\GiteaAIReview\AppData\Roaming\npm\gitnexus.cmd
     steps:
+      - name: Resolve PR metadata
+        id: metadata
+        env:
+          GITEA_REVIEW_TOKEN: ${{ secrets.AI_REVIEW_GITEA_TOKEN }}
+          GITEA_API_URL: ${{ gitea.api_url }}
+          REPOSITORY: ${{ gitea.repository }}
+          EVENT_PR_NUMBER: ${{ gitea.event.pull_request.number }}
+          MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          $prNumber = if ($env:MANUAL_PR_NUMBER) { $env:MANUAL_PR_NUMBER } else { $env:EVENT_PR_NUMBER }
+          & $env:REVIEWER_EXE metadata `
+            --gitea-url "$env:GITEA_API_URL" `
+            --repository "$env:REPOSITORY" `
+            --pr "$prNumber" `
+            --output-file "$env:GITHUB_OUTPUT"
+
       - name: Check out exact PR head
         uses: actions/checkout@v4
         with:
-          ref: ${{ gitea.event.pull_request.head.sha }}
+          ref: ${{ steps.metadata.outputs.head_sha }}
           fetch-depth: 0
           persist-credentials: false
 
       - name: Fetch base commit as data
         env:
-          BASE_SHA: ${{ gitea.event.pull_request.base.sha }}
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
         run: git fetch --no-tags origin $env:BASE_SHA
 
       - name: Index exact PR head with GitNexus
         env:
-          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
         run: |
           & $env:REVIEWER_EXE index `
             --head-sha "$env:HEAD_SHA" `
@@ -52,7 +74,7 @@ jobs:
       # temporary HOME and removes Gitea, Codex, and unrelated runner secrets.
       - name: Collect deterministic evidence
         env:
-          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           EVIDENCE_FILE: ${{ runner.temp }}\gitea-auto-review-evidence.json
         run: |
           & $env:REVIEWER_EXE evidence `
@@ -66,11 +88,11 @@ jobs:
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
           EVIDENCE_FILE: ${{ runner.temp }}\gitea-auto-review-evidence.json
           REPOSITORY: ${{ gitea.repository }}
-          PR_NUMBER: ${{ gitea.event.pull_request.number }}
-          PR_TITLE: ${{ gitea.event.pull_request.title }}
-          BASE_SHA: ${{ gitea.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
-          HEAD_REPOSITORY: ${{ gitea.event.pull_request.head.repo.full_name }}
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+          PR_TITLE: ${{ steps.metadata.outputs.pr_title }}
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+          HEAD_REPOSITORY: ${{ steps.metadata.outputs.head_repository }}
         run: |
           & $env:REVIEWER_EXE review `
             --repository "$env:REPOSITORY" `
@@ -86,7 +108,7 @@ jobs:
       - name: Plan rollback-only reproductions
         env:
           GITEA_TOKEN: ""
-          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
           PLAN_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction-plan.json
         run: |
@@ -101,7 +123,7 @@ jobs:
       # pass a fresh-connection cleanup check before it can be published.
       - name: Reproduce candidate findings with rollback
         env:
-          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           PLAN_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction-plan.json
           REPRODUCTION_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction.json
         run: |
@@ -115,7 +137,7 @@ jobs:
 
       - name: Keep only reproduced findings
         env:
-          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           CANDIDATE_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
           REPRODUCTION_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction.json
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review.json
@@ -132,9 +154,9 @@ jobs:
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review.json
           GITEA_API_URL: ${{ gitea.api_url }}
           REPOSITORY: ${{ gitea.repository }}
-          PR_NUMBER: ${{ gitea.event.pull_request.number }}
-          PR_TITLE: ${{ gitea.event.pull_request.title }}
-          HEAD_SHA: ${{ gitea.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+          PR_TITLE: ${{ steps.metadata.outputs.pr_title }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
         run: |
           & $env:REVIEWER_EXE comment `
             --gitea-url "$env:GITEA_API_URL" `

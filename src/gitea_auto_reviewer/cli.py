@@ -28,6 +28,13 @@ def build_parser() -> argparse.ArgumentParser:
     index.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
     index.add_argument("--timeout", type=int, default=900)
 
+    metadata = subparsers.add_parser("metadata", help="resolve a PR for automatic or manual review")
+    metadata.add_argument("--gitea-url", default=os.getenv("GITEA_URL"))
+    metadata.add_argument("--repository", default=os.getenv("GITEA_REPOSITORY"))
+    metadata.add_argument("--pr", type=int, required=True)
+    metadata.add_argument("--output-file", type=Path, required=True)
+    metadata.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
+
     evidence = subparsers.add_parser("evidence", help="run deterministic checks in isolated CI")
     evidence.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
     evidence.add_argument("--repo-dir", type=Path, default=Path.cwd())
@@ -183,6 +190,27 @@ def index_command(arguments: argparse.Namespace) -> None:
     print("GitNexus index is ready")
 
 
+def metadata_command(arguments: argparse.Namespace) -> None:
+    token = os.getenv(arguments.token_env)
+    client = GiteaClient(str(_required(arguments.gitea_url, "Gitea URL")),
+                         str(_required(arguments.repository, "repository")),
+                         str(_required(token, arguments.token_env)))
+    metadata = client.get_pull_request(arguments.pr)
+    repository = str(arguments.repository)
+    if metadata.head_repository != repository:
+        raise ValueError("v0.2 only reviews pull requests from the same repository")
+    values = {
+        "pr_number": str(metadata.number),
+        "pr_title": " ".join(metadata.title.split()),
+        "base_sha": validate_sha(metadata.base_sha),
+        "head_sha": validate_sha(metadata.head_sha),
+        "head_repository": metadata.head_repository,
+    }
+    with arguments.output_file.open("a", encoding="utf-8") as output:
+        output.writelines(f"{name}={value}\n" for name, value in values.items())
+    print(f"Resolved PR #{metadata.number} at {values['head_sha']}")
+
+
 def _evidence_tests(evidence: Evidence) -> TestResult:
     check = evidence.pytest
     if check.status in {"pass", "fail"} and check.passed is not None and check.total is not None:
@@ -245,6 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         arguments = build_parser().parse_args(argv)
         if arguments.command == "index":
             index_command(arguments)
+        elif arguments.command == "metadata":
+            metadata_command(arguments)
         elif arguments.command == "evidence":
             evidence_command(arguments)
         elif arguments.command == "review":

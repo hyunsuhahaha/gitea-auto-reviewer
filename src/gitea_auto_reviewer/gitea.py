@@ -8,6 +8,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any
 
 REPOSITORY_PATTERN = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
@@ -20,6 +21,15 @@ class GiteaAPIError(RuntimeError):
 
 
 Transport = Callable[[urllib.request.Request, float], bytes]
+
+
+@dataclass(frozen=True)
+class PullRequestMetadata:
+    number: int
+    title: str
+    base_sha: str
+    head_sha: str
+    head_repository: str
 
 
 def _default_transport(request: urllib.request.Request, timeout: float) -> bytes:
@@ -66,6 +76,21 @@ class GiteaClient:
         self._request("POST", f"/repos/{self.repository}/issues/{pr_number}/comments", {"body": body})
         return "created"
 
+    def get_pull_request(self, pr_number: int) -> PullRequestMetadata:
+        if pr_number < 1:
+            raise ValueError("PR number must be positive")
+        value = self._request("GET", f"/repos/{self.repository}/pulls/{pr_number}")
+        try:
+            title = value["title"]
+            base_sha = value["base"]["sha"]
+            head_sha = value["head"]["sha"]
+            head_repository = value["head"]["repo"]["full_name"]
+        except (KeyError, TypeError) as exc:
+            raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata") from exc
+        if not all(isinstance(item, str) and item for item in (title, base_sha, head_sha, head_repository)):
+            raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata")
+        return PullRequestMetadata(pr_number, title, base_sha, head_sha, head_repository)
+
     def _find_comment(self, pr_number: int, marker: str) -> int | None:
         # ponytail: inspect at most 500 comments; add full pagination if real PRs exceed this.
         for page in range(1, 11):
@@ -109,4 +134,3 @@ class GiteaClient:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise GiteaAPIError(0, "Gitea returned invalid JSON") from exc
-

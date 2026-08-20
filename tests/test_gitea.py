@@ -37,3 +37,21 @@ def test_upsert_creates_comment_when_marker_is_absent() -> None:
     assert action == "created"
     assert methods == ["GET", "POST"]
 
+
+def test_get_pull_request_returns_review_metadata() -> None:
+    def transport(request, timeout):
+        assert request.method == "GET"
+        assert request.full_url.endswith("/repos/owner/repo/pulls/95")
+        return json.dumps({
+            "title": "ERP PO allocation",
+            "base": {"sha": "a" * 40},
+            "head": {"sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+        }).encode()
+
+    metadata = GiteaClient("https://gitea.example", "owner/repo", "token", transport).get_pull_request(95)
+
+    assert metadata.number == 95
+    assert metadata.title == "ERP PO allocation"
+    assert metadata.base_sha == "a" * 40
+    assert metadata.head_sha == "b" * 40
+    assert metadata.head_repository == "owner/repo"

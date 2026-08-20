@@ -1,5 +1,15 @@
 # gitea-auto-reviewer
 
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
+[![stdlib only](https://img.shields.io/badge/runtime%20deps-stdlib%20only-informational.svg)](pyproject.toml)
+
+**The self-hosted Gitea reviewer that doesn't just trust the LLM.** Most AI PR
+reviewers — including the other self-hosted Gitea bots — read a diff, ask an
+LLM for an opinion, and post it. This one goes further: every finding is
+re-run against a real test database inside a forced-rollback transaction
+before it's allowed anywhere near a PR comment. No reproduction, no comment.
+
 `gitea-auto-reviewer` is a compact AI change-impact summary for self-hosted
 Gitea. It connects an existing Codex subscription to pull-request comments and
 explains what changed, what new assumptions the change introduces, where it may
@@ -283,6 +293,17 @@ The same values can be supplied through `GITEA_REPOSITORY`,
 `GITEA_HEAD_REPOSITORY`, `GITEA_PR_NUMBER`, `GITEA_PR_TITLE`, `GITEA_BASE_SHA`,
 `GITEA_HEAD_SHA`, `GITEA_URL`, and `GITEA_REVIEW_TOKEN`. Tokens are deliberately
 environment-only so they do not appear in process listings or shell history.
+
+### Manually review an existing or merged PR
+
+The example workflow also supports `workflow_dispatch`. In the repository's
+Actions page, choose **Codex AI review**, select **Run workflow**, enter only
+the existing PR number, and run it. The metadata stage reads the original
+title, base SHA, head SHA, and head repository from Gitea, then runs the same
+index, CI, Codex, rollback-reproduction, finalize, and comment stages. This can
+update the review comment on a merged PR without reopening it or creating a
+test commit. The original head commit must still be available in the Gitea
+repository.
 
 ## Change-impact format
 
