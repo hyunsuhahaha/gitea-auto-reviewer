@@ -85,11 +85,31 @@ class GiteaClient:
             base_sha = value["base"]["sha"]
             head_sha = value["head"]["sha"]
             head_repository = value["head"]["repo"]["full_name"]
+            merged = value.get("merged") is True
+            merge_commit_sha = value.get("merge_commit_sha")
         except (KeyError, TypeError) as exc:
             raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata") from exc
         if not all(isinstance(item, str) and item for item in (title, base_sha, head_sha, head_repository)):
             raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata")
+        if merged:
+            # Gitea recomputes base.sha to the live base-branch tip once a PR is
+            # merged, so it no longer identifies the pre-merge base commit. Use
+            # the merge commit's first parent, which is that base-branch tip at
+            # the moment this PR was merged, instead.
+            if not isinstance(merge_commit_sha, str) or not merge_commit_sha:
+                raise GiteaAPIError(0, "Gitea returned a merged pull request without a merge commit")
+            base_sha = self._get_commit_parent(merge_commit_sha)
         return PullRequestMetadata(pr_number, title, base_sha, head_sha, head_repository)
+
+    def _get_commit_parent(self, sha: str) -> str:
+        value = self._request("GET", f"/repos/{self.repository}/git/commits/{sha}")
+        try:
+            parent_sha = value["parents"][0]["sha"]
+        except (KeyError, IndexError, TypeError) as exc:
+            raise GiteaAPIError(0, "Gitea returned a merge commit without a parent") from exc
+        if not isinstance(parent_sha, str) or not parent_sha:
+            raise GiteaAPIError(0, "Gitea returned an invalid merge commit parent")
+        return parent_sha
 
     def _find_comment(self, pr_number: int, marker: str) -> int | None:
         # ponytail: inspect at most 500 comments; add full pagination if real PRs exceed this.
