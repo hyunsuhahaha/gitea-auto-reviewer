@@ -139,6 +139,11 @@ def safe_evidence_environment(home: Path) -> dict[str, str]:
     allowed = {name.upper() for name in SAFE_ENVIRONMENT_NAMES}
     environment = {name: value for name, value in os.environ.items() if name.upper() in allowed}
     environment.update({name: str(home) for name in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")})
+    # Django's makemigrations opens a real DB connection to check migration-history
+    # consistency even with --check --dry-run --noinput. libpq/psycopg honor this to
+    # fail fast instead of blocking on the OS TCP timeout when that DB is unreachable
+    # from CI (observed ~25s per attempt without it).
+    environment["PGCONNECT_TIMEOUT"] = "5"
     return environment
 
 

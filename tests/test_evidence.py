@@ -24,6 +24,16 @@ def test_evidence_environment_removes_runner_credentials(monkeypatch, tmp_path: 
     assert environment["USERPROFILE"] == str(tmp_path)
 
 
+def test_evidence_environment_bounds_postgres_connect_timeout(tmp_path: Path) -> None:
+    # makemigrations checks migration-history consistency against a live DB even
+    # with --check --dry-run --noinput; an unreachable configured host must fail
+    # fast instead of blocking on the OS TCP timeout (~20s+ observed).
+    environment = safe_evidence_environment(tmp_path)
+
+    assert environment["PGCONNECT_TIMEOUT"].isdigit()
+    assert int(environment["PGCONNECT_TIMEOUT"]) <= 10
+
+
 def test_collects_checks_for_exact_head(monkeypatch, tmp_path: Path) -> None:
     (tmp_path / "manage.py").write_text("", encoding="utf-8")
     head = "a" * 40
