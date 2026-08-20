@@ -38,6 +38,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     evidence = subparsers.add_parser("evidence", help="run deterministic checks in isolated CI")
     evidence.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
+    evidence.add_argument("--base-sha", default=os.getenv("GITEA_BASE_SHA"))
     evidence.add_argument("--repo-dir", type=Path, default=Path.cwd())
     evidence.add_argument("--output", type=Path, default=Path("evidence.json"))
     evidence.add_argument("--python", default="python")
@@ -173,6 +174,7 @@ def evidence_command(arguments: argparse.Namespace) -> None:
         arguments.python,
         arguments.timeout,
         arguments.only,
+        arguments.base_sha,
     )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Evidence written to {arguments.output}")

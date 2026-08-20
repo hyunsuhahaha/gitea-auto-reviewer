@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import tempfile
+import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -85,7 +86,7 @@ class Evidence:
 
 
 def collect_evidence(repository: Path, head_sha: str, python: str = "python", timeout: int = 900,
-                     only: str | None = None) -> Evidence:
+                     only: str | None = None, base_sha: str | None = None) -> Evidence:
     head_sha = validate_sha(head_sha)
     if only not in {None, "django_check", "migration_check", "pytest"}:
         raise ValueError("unknown evidence check")
@@ -103,11 +104,19 @@ def collect_evidence(repository: Path, head_sha: str, python: str = "python", ti
         if not (repository / "manage.py").is_file():
             raise ValueError("manage.py was not found in the repository root")
         not_run = Check("not_run", "not selected")
+        migration = not_run
+        if only in {None, "migration_check"}:
+            if base_sha and not _python_changed(repository, validate_sha(base_sha), head_sha, environment):
+                migration = Check("pass", "Skipped: no Python files changed")
+            else:
+                migration = _run_migration(
+                    [python, "manage.py", "makemigrations", "--check", "--dry-run"],
+                    repository, timeout, environment,
+                )
         return Evidence(head_sha,
             _run([python, "manage.py", "check"], repository, timeout, environment)
             if only in {None, "django_check"} else not_run,
-            _run_migration([python, "manage.py", "makemigrations", "--check", "--dry-run"], repository, timeout, environment)
-            if only in {None, "migration_check"} else not_run,
+            migration,
             _run_pytest([python, "-m", "pytest", "-q", "-p", "no:cacheprovider"], repository, timeout, environment)
             if only in {None, "pytest"} else not_run,
         )
@@ -134,13 +143,31 @@ def safe_evidence_environment(home: Path) -> dict[str, str]:
 
 
 def _run(command: list[str], repository: Path, timeout: int, environment: dict[str, str]) -> Check:
+    label = " ".join(command[1:])
+    print(f"Starting check: {label}", flush=True)
+    started = time.monotonic()
     try:
         result = subprocess.run(command, cwd=repository, capture_output=True, text=True,
                                 encoding="utf-8", errors="replace", timeout=timeout, check=False,
                                 env=environment)
     except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"Check stopped after {time.monotonic() - started:.1f}s: {type(exc).__name__}", flush=True)
         return Check("error", type(exc).__name__)
+    print(f"Check finished in {time.monotonic() - started:.1f}s with exit code {result.returncode}", flush=True)
     return Check("pass" if result.returncode == 0 else "fail", _summary(result.stdout, result.stderr))
+
+
+def _python_changed(repository: Path, base_sha: str, head_sha: str,
+                    environment: dict[str, str]) -> bool:
+    try:
+        result = subprocess.run(
+            ["git", "diff", "--name-only", base_sha, head_sha, "--", "*.py"],
+            cwd=repository, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=30, check=True, env=environment,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("could not determine whether Python files changed") from exc
+    return bool(result.stdout.strip())
 
 
 def _run_pytest(command: list[str], repository: Path, timeout: int, environment: dict[str, str]) -> Check:

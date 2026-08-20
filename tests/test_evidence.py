@@ -99,6 +99,26 @@ def test_collects_one_check_and_merges_sha_bound_parts(monkeypatch, tmp_path: Pa
     assert parts[0].migration_check == Check("not_run", "not selected")
 
 
+def test_skips_migration_check_when_no_python_files_changed(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "manage.py").write_text("", encoding="utf-8")
+    head, base = "a" * 40, "b" * 40
+    commands: list[list[str]] = []
+
+    def fake_run(command, **kwargs):
+        commands.append(command)
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            return CompletedProcess(command, 0, head + "\n", "")
+        if command[:3] == ["git", "diff", "--name-only"]:
+            return CompletedProcess(command, 0, "", "")
+        return CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr("gitea_auto_reviewer.evidence.subprocess.run", fake_run)
+    result = collect_evidence(tmp_path, head, only="migration_check", base_sha=base)
+
+    assert result.migration_check == Check("pass", "Skipped: no Python files changed")
+    assert not any("makemigrations" in command for command in commands)
+
+
 def test_merge_rejects_missing_or_mismatched_parts() -> None:
     not_run = Check("not_run", "not selected")
     passed = Check("pass", "ok")

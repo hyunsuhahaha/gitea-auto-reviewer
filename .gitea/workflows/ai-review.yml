@@ -85,12 +85,15 @@ jobs:
 
       - name: Run migration check
         env:
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-migration.json
         run: |
           & $env:REVIEWER_EXE evidence `
             --head-sha "$env:HEAD_SHA" `
+            --base-sha "$env:BASE_SHA" `
             --python "$env:CI_PYTHON" `
+            --timeout 120 `
             --only "migration_check" `
             --output "$env:CHECK_FILE"
 
