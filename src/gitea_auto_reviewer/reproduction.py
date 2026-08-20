@@ -20,7 +20,7 @@ PLAN_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
     "required": ["version", "head_sha", "cases"],
     "properties": {
-        "version": {"const": 1},
+        "version": {"type": "integer", "const": 1},
         "head_sha": {"type": "string"},
         "cases": {"type": "array", "maxItems": 3, "items": {
             "type": "object", "additionalProperties": False,

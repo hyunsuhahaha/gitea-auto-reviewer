@@ -3,6 +3,7 @@ import json
 import pytest
 
 from gitea_auto_reviewer.reproduction import (
+    PLAN_SCHEMA,
     ReproductionEvidence,
     ReproductionPlan,
     ReproductionResult,
@@ -14,6 +15,21 @@ from gitea_auto_reviewer.review import Review, render_markdown
 
 
 SHA = "a" * 40
+
+
+@pytest.mark.parametrize("schema", [PLAN_SCHEMA])
+def test_structured_output_const_nodes_declare_a_type(schema) -> None:
+    def visit(value):
+        if isinstance(value, dict):
+            if "const" in value:
+                assert "type" in value
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(schema)
 
 
 def test_plan_is_sha_bound_and_rejects_process_execution() -> None:

@@ -143,7 +143,7 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
                 "oracle": {"type": "string", "minLength": 1, "maxLength": 1000},
                 "expected": {"type": "string", "maxLength": 1000},
                 "observed": {"type": "string", "minLength": 1, "maxLength": 1000},
-                "cleanup_verified": {"const": True},
+                "cleanup_verified": {"type": "boolean", "const": True},
             },
         },
     },

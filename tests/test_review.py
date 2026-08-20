@@ -74,6 +74,20 @@ def test_codex_schema_does_not_mix_ref_with_other_keywords() -> None:
     visit(REVIEW_JSON_SCHEMA)
 
 
+def test_codex_schema_const_nodes_declare_a_type() -> None:
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            if "const" in value:
+                assert "type" in value
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(REVIEW_JSON_SCHEMA)
+
+
 def test_review_renders_compact_change_impact_summary() -> None:
     payload = impact_payload()
     finding = payload["findings"][0]
