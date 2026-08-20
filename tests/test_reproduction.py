@@ -32,6 +32,8 @@ def test_reproduction_plan_requires_korean_user_visible_text() -> None:
     assert "condition" in prompt and "expected" in prompt and "observed" in prompt
     assert "must be Korean" in prompt
     assert "1-6 concise, unnumbered lines" in prompt
+    assert "Do not present arbitrary fixture values" in prompt
+    assert "only in `observed`" in prompt
 
 
 def test_reproduction_requires_one_result_per_planned_case() -> None:
