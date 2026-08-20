@@ -535,7 +535,8 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         "주요 변경",
         *[f"• {item}" for item in review.key_changes],
         "",
-        *(_reproduced_finding_section(review.reproduced_findings) if review.reproduced_findings else []),
+        *(_reproduced_finding_section(review.reproduced_findings)
+          if review.reproduced_findings else ["", "재현된 문제", "• 자동 재현 및 2차 검증을 통과"]),
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"

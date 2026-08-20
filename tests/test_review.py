@@ -273,3 +273,13 @@ def test_verifier_may_only_remove_verbatim_findings() -> None:
     affected_rewritten["affected_files"][0]["reason"] = "검증기가 새로 쓴 영향"
     with pytest.raises(ValueError, match="affected file"):
         validate_verification(draft, Review.from_json(json.dumps(affected_rewritten)))
+
+
+def test_renderer_states_when_no_reproduced_problem_survives() -> None:
+    payload = impact_payload()
+    payload["findings"] = []
+    review = Review.from_json(json.dumps(payload))
+
+    rendered = render_markdown(review, 1, "a" * 40, "테스트")
+
+    assert "재현된 문제\n• 자동 재현 및 2차 검증을 통과" in rendered
