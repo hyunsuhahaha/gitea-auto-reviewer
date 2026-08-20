@@ -216,6 +216,11 @@ This runs `python manage.py check`, `python manage.py makemigrations --check
 `HEAD` equals `--head-sha` before executing anything and records that SHA in the
 evidence document.
 
+The example workflow runs those three checks as separate Actions steps and
+combines their SHA-bound JSON files with `evidence-merge`. This makes Django,
+migration, and pytest duration visible independently without changing the
+final evidence consumed by Codex.
+
 The first Codex pass uses high reasoning effort for repository and boundary
 analysis. The independent rejection pass uses low effort because it only
 disproves or retains existing findings.

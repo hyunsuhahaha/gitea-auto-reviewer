@@ -12,3 +12,7 @@ def test_workflow_supports_manual_review_of_existing_pr() -> None:
     assert "steps.metadata.outputs.base_sha" in workflow
     assert "steps.metadata.outputs.head_sha" in workflow
     assert "steps.metadata.outputs.pr_number" in workflow
+    assert "Run Django system check" in workflow
+    assert "Run migration check" in workflow
+    assert "Run pytest" in workflow
+    assert "Combine deterministic evidence" in workflow

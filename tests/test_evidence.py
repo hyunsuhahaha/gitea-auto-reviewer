@@ -4,7 +4,7 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from gitea_auto_reviewer.evidence import Evidence, collect_evidence, safe_evidence_environment
+from gitea_auto_reviewer.evidence import Check, Evidence, collect_evidence, merge_evidence, safe_evidence_environment
 
 
 def test_evidence_environment_removes_runner_credentials(monkeypatch, tmp_path: Path) -> None:
@@ -75,3 +75,35 @@ def test_migration_command_error_is_not_reported_as_missing(monkeypatch, tmp_pat
     monkeypatch.setattr("gitea_auto_reviewer.evidence.subprocess.run", fake_run)
 
     assert collect_evidence(tmp_path, head).migration_check.status == "error"
+
+
+def test_collects_one_check_and_merges_sha_bound_parts(monkeypatch, tmp_path: Path) -> None:
+    (tmp_path / "manage.py").write_text("", encoding="utf-8")
+    head = "a" * 40
+
+    def fake_run(command, **kwargs):
+        if command[:3] == ["git", "rev-parse", "HEAD"]:
+            return CompletedProcess(command, 0, head + "\n", "")
+        if "pytest" in command:
+            return CompletedProcess(command, 0, "19 passed", "")
+        return CompletedProcess(command, 0, "ok", "")
+
+    monkeypatch.setattr("gitea_auto_reviewer.evidence.subprocess.run", fake_run)
+    parts = [collect_evidence(tmp_path, head, only=name)
+             for name in ("django_check", "migration_check", "pytest")]
+    merged = merge_evidence(parts)
+
+    assert merged.django_check.status == "pass"
+    assert merged.migration_check.status == "pass"
+    assert (merged.pytest.passed, merged.pytest.total) == (19, 19)
+    assert parts[0].migration_check == Check("not_run", "not selected")
+
+
+def test_merge_rejects_missing_or_mismatched_parts() -> None:
+    not_run = Check("not_run", "not selected")
+    passed = Check("pass", "ok")
+    with pytest.raises(ValueError, match="one PR head"):
+        merge_evidence([Evidence("a" * 40, passed, not_run, not_run),
+                        Evidence("b" * 40, not_run, passed, not_run)])
+    with pytest.raises(ValueError, match="pytest"):
+        merge_evidence([Evidence("a" * 40, passed, passed, not_run)])

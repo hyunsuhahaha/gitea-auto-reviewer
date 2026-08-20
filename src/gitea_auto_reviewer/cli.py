@@ -9,7 +9,7 @@ from dataclasses import asdict, replace
 from pathlib import Path
 
 from .codex import assert_logged_in, run_codex_review
-from .evidence import Evidence, collect_evidence
+from .evidence import Evidence, collect_evidence, merge_evidence
 from .git_context import build_prompt, build_verification_prompt, collect_context, validate_sha
 from .gitea import GiteaClient
 from .gitnexus import index_repository
@@ -41,6 +41,11 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--output", type=Path, default=Path("evidence.json"))
     evidence.add_argument("--python", default="python")
     evidence.add_argument("--timeout", type=int, default=900)
+    evidence.add_argument("--only", choices=["django_check", "migration_check", "pytest"])
+
+    evidence_merge = subparsers.add_parser("evidence-merge", help="combine SHA-bound check results")
+    evidence_merge.add_argument("--input", type=Path, action="append", required=True)
+    evidence_merge.add_argument("--output", type=Path, default=Path("evidence.json"))
 
     review = subparsers.add_parser("review", help="create a review.json with Codex")
     review.add_argument("--repository", default=os.getenv("GITEA_REPOSITORY"), required=False)
@@ -175,9 +180,17 @@ def evidence_command(arguments: argparse.Namespace) -> None:
         str(_required(arguments.head_sha, "head SHA")),
         arguments.python,
         arguments.timeout,
+        arguments.only,
     )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Evidence written to {arguments.output}")
+
+
+def evidence_merge_command(arguments: argparse.Namespace) -> None:
+    parts = [Evidence.from_json(path.read_text(encoding="utf-8")) for path in arguments.input]
+    evidence = merge_evidence(parts)
+    arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
+    print(f"Combined evidence written to {arguments.output}")
 
 
 def index_command(arguments: argparse.Namespace) -> None:
@@ -277,6 +290,8 @@ def main(argv: list[str] | None = None) -> int:
             metadata_command(arguments)
         elif arguments.command == "evidence":
             evidence_command(arguments)
+        elif arguments.command == "evidence-merge":
+            evidence_merge_command(arguments)
         elif arguments.command == "review":
             review_command(arguments)
         elif arguments.command == "plan":

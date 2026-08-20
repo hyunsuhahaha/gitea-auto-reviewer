@@ -72,16 +72,50 @@ jobs:
           & $env:UV_EXE venv --clear ".venv-ci" --python "C:\Python311\python.exe"
           & $env:UV_EXE pip install --python $env:CI_PYTHON -r "requirements-ci.txt"
 
-      # This executes trusted internal PR code. The CLI gives child processes a
-      # temporary HOME and removes Gitea, Codex, and unrelated runner secrets.
-      - name: Collect deterministic evidence
+      - name: Run Django system check
         env:
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
-          EVIDENCE_FILE: ${{ runner.temp }}\gitea-auto-review-evidence.json
+          CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-django.json
         run: |
           & $env:REVIEWER_EXE evidence `
             --head-sha "$env:HEAD_SHA" `
             --python "$env:CI_PYTHON" `
+            --only "django_check" `
+            --output "$env:CHECK_FILE"
+
+      - name: Run migration check
+        env:
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+          CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-migration.json
+        run: |
+          & $env:REVIEWER_EXE evidence `
+            --head-sha "$env:HEAD_SHA" `
+            --python "$env:CI_PYTHON" `
+            --only "migration_check" `
+            --output "$env:CHECK_FILE"
+
+      - name: Run pytest
+        env:
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+          CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-pytest.json
+        run: |
+          & $env:REVIEWER_EXE evidence `
+            --head-sha "$env:HEAD_SHA" `
+            --python "$env:CI_PYTHON" `
+            --only "pytest" `
+            --output "$env:CHECK_FILE"
+
+      - name: Combine deterministic evidence
+        env:
+          DJANGO_FILE: ${{ runner.temp }}\gitea-auto-review-django.json
+          MIGRATION_FILE: ${{ runner.temp }}\gitea-auto-review-migration.json
+          PYTEST_FILE: ${{ runner.temp }}\gitea-auto-review-pytest.json
+          EVIDENCE_FILE: ${{ runner.temp }}\gitea-auto-review-evidence.json
+        run: |
+          & $env:REVIEWER_EXE evidence-merge `
+            --input "$env:DJANGO_FILE" `
+            --input "$env:MIGRATION_FILE" `
+            --input "$env:PYTEST_FILE" `
             --output "$env:EVIDENCE_FILE"
 
       - name: Generate read-only Codex review

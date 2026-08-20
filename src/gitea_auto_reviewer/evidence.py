@@ -84,8 +84,11 @@ class Evidence:
         )
 
 
-def collect_evidence(repository: Path, head_sha: str, python: str = "python", timeout: int = 900) -> Evidence:
+def collect_evidence(repository: Path, head_sha: str, python: str = "python", timeout: int = 900,
+                     only: str | None = None) -> Evidence:
     head_sha = validate_sha(head_sha)
+    if only not in {None, "django_check", "migration_check", "pytest"}:
+        raise ValueError("unknown evidence check")
     with tempfile.TemporaryDirectory(prefix="gitea-evidence-") as home:
         environment = safe_evidence_environment(Path(home))
         try:
@@ -99,12 +102,28 @@ def collect_evidence(repository: Path, head_sha: str, python: str = "python", ti
             raise ValueError("evidence checkout does not match the supplied PR head SHA")
         if not (repository / "manage.py").is_file():
             raise ValueError("manage.py was not found in the repository root")
-        return Evidence(
-            head_sha,
-            _run([python, "manage.py", "check"], repository, timeout, environment),
-            _run_migration([python, "manage.py", "makemigrations", "--check", "--dry-run"], repository, timeout, environment),
-            _run_pytest([python, "-m", "pytest", "-q", "-p", "no:cacheprovider"], repository, timeout, environment),
+        not_run = Check("not_run", "not selected")
+        return Evidence(head_sha,
+            _run([python, "manage.py", "check"], repository, timeout, environment)
+            if only in {None, "django_check"} else not_run,
+            _run_migration([python, "manage.py", "makemigrations", "--check", "--dry-run"], repository, timeout, environment)
+            if only in {None, "migration_check"} else not_run,
+            _run_pytest([python, "-m", "pytest", "-q", "-p", "no:cacheprovider"], repository, timeout, environment)
+            if only in {None, "pytest"} else not_run,
         )
+
+
+def merge_evidence(parts: list[Evidence]) -> Evidence:
+    if not parts or len({part.head_sha for part in parts}) != 1:
+        raise ValueError("evidence parts must belong to one PR head SHA")
+
+    def select(name: str) -> Check:
+        checks = [getattr(part, name) for part in parts if getattr(part, name).status != "not_run"]
+        if len(checks) != 1:
+            raise ValueError(f"evidence requires exactly one {name} result")
+        return checks[0]
+
+    return Evidence(parts[0].head_sha, select("django_check"), select("migration_check"), select("pytest"))
 
 
 def safe_evidence_environment(home: Path) -> dict[str, str]:
