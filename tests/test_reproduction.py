@@ -9,6 +9,7 @@ from gitea_auto_reviewer.reproduction import (
     ReproductionPlan,
     ReproductionResult,
     VerificationDecision,
+    _RUNNER_SOURCE,
     finalize_review,
     validate_script,
 )
@@ -17,6 +18,10 @@ from gitea_auto_reviewer.review import Review, render_markdown
 
 
 SHA = "a" * 40
+
+
+def test_reproduction_runner_imports_project_from_checkout_root() -> None:
+    assert 'sys.path.insert(0, str(Path.cwd()))' in _RUNNER_SOURCE
 
 
 @pytest.mark.parametrize("schema", [PLAN_SCHEMA, VERIFICATION_SCHEMA])

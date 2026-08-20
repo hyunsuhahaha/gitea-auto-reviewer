@@ -21,3 +21,4 @@ def test_workflow_supports_manual_review_of_existing_pr() -> None:
     verify = workflow.index("Verify reproduced findings with Codex")
     publish = workflow.index("Keep only reproduced findings")
     assert first < reproduce < verify < publish
+    assert 'gitea-auto-review*.json' in workflow

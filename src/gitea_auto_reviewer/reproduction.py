@@ -286,6 +286,7 @@ def write(value):
     Path(sys.argv[2]).write_text(json.dumps(value, ensure_ascii=False), encoding="utf-8")
 
 try:
+    sys.path.insert(0, str(Path.cwd()))
     import django
     django.setup()
     from django.apps import apps

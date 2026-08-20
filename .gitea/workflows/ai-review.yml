@@ -234,4 +234,4 @@ jobs:
           $debug = "C:\gitea\ai-review\debug-last-run"
           Remove-Item -Recurse -Force $debug -ErrorAction SilentlyContinue
           New-Item -ItemType Directory -Force $debug | Out-Null
-          Copy-Item "$env:TMP_DIR\gitea-auto-review-*.json" $debug -ErrorAction SilentlyContinue
+          Copy-Item "$env:TMP_DIR\gitea-auto-review*.json" $debug -ErrorAction SilentlyContinue
