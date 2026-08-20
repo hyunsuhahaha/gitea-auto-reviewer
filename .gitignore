@@ -4,6 +4,8 @@ __pycache__/
 .pytest_cache/
 pytest-cache-files-*/
 .test-tmp/
+.qa-*/
+.codex-test-tmp-*/
 .venv/
 build/
 dist/
