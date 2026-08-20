@@ -73,6 +73,14 @@ def test_plan_is_sha_bound_and_rejects_process_execution() -> None:
         validate_script("print('side effect')\ndef reproduce():\n    return {}\n")
 
 
+def test_reproduction_script_allows_in_memory_string_replacement() -> None:
+    validate_script(
+        "def reproduce():\n"
+        "    observed = '100 -> 50'.replace('->', '→')\n"
+        "    return {'confirmed': False, 'expected': 'ok', 'observed': observed, 'cleanup_checks': []}\n"
+    )
+
+
 def test_finalize_keeps_only_confirmed_cleanup_verified_findings() -> None:
     review = Review.from_json(json.dumps(impact_payload()))
     evidence = ReproductionEvidence(SHA, (

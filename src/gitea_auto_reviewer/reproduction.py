@@ -197,7 +197,7 @@ Reproduction evidence:
 
 FORBIDDEN_IMPORTS = {"subprocess", "socket", "requests", "httpx", "urllib", "ftplib", "pathlib", "shutil", "os"}
 FORBIDDEN_CALLS = {"open", "exec", "eval", "compile", "__import__", "commit", "set_autocommit",
-                   "remove", "unlink", "rmdir", "rename", "replace", "write_text", "write_bytes", "mkdir"}
+                   "remove", "unlink", "rmdir", "rename", "write_text", "write_bytes", "mkdir"}
 
 
 def validate_script(script: str) -> None:
