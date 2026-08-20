@@ -11,6 +11,7 @@ from gitea_auto_reviewer.reproduction import (
     ReproductionResult,
     VerificationDecision,
     _RUNNER_SOURCE,
+    build_plan_prompt,
     finalize_review,
     _complete_evidence,
     validate_script,
@@ -24,6 +25,12 @@ SHA = "a" * 40
 
 def test_reproduction_runner_imports_project_from_checkout_root() -> None:
     assert 'sys.path.insert(0, str(Path.cwd()))' in _RUNNER_SOURCE
+
+
+def test_reproduction_plan_requires_korean_user_visible_text() -> None:
+    prompt = build_plan_prompt(Review.from_json(json.dumps(impact_payload())), SHA)
+    assert "condition" in prompt and "expected" in prompt and "observed" in prompt
+    assert "must be Korean" in prompt
 
 
 def test_reproduction_requires_one_result_per_planned_case() -> None:

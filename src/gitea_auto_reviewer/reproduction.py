@@ -153,6 +153,8 @@ The repository is already checked out at PR head {head_sha}. Inspect it, includi
 
 Return at most 3 cases, only for findings that can be objectively reproduced by importing Django and directly calling ORM/service/view code against the configured test database. Skip subjective, destructive, external-network, browser-only, or schema-incompatible cases.
 
+Write every user-visible explanation in Korean. In particular, `condition`, `oracle`, and the script's returned `expected` and `observed` strings must be Korean. Keep code identifiers and concrete values unchanged when needed.
+
 Each script must contain only imports plus exactly `def reproduce():`, and return a JSON-compatible dict:
   confirmed: boolean (true only when the stated bad behavior was actually observed)
   expected: short string
