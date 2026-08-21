@@ -100,6 +100,9 @@ class ReproductionResult:
     observed: str
     cleanup_verified: bool
     duration_seconds: float
+    population_label: str | None = None
+    matching_count: int | None = None
+    total_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,7 @@ Each script must contain only imports plus exactly `def reproduce():`, and retur
   expected: short string
   observed: short string containing concrete values or response text
   cleanup_checks: non-empty list of {{model, lookup, field, equals}} or {{model, lookup, exists}}
+  population_label, matching_count, total_count: prevalence data counted from untouched test-DB rows before any reproduction mutation. Return all three whenever ORM can define a defensible natural population and matching condition; omit all three only when it cannot. Never invent counts. These values are informational and never decide whether a finding is confirmed.
 
 The fixed runner supplies django.setup(), transaction.atomic(), forced rollback, a fresh-connection cleanup check, and exception handling. Do not manage transactions. Select existing records semantically through ORM; never hard-code database primary keys. Do not write files, spawn processes, use network clients, call ERP, or mutate anything outside the rollback transaction. RequestFactory/SimpleNamespace and direct Django view calls are allowed.
 
@@ -253,13 +257,26 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
                 expected = str(payload.get("expected", case.oracle))[:1000]
                 observed = str(payload.get("observed", (process.stderr or "execution failed")[-1000:]))[:1000]
                 cleanup = payload.get("cleanup_verified") is True
+                population = _population(payload)
                 if not cleanup:
                     status = "inconclusive"
             except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
                 status, expected, observed, cleanup = "inconclusive", case.oracle, type(exc).__name__, False
+                population = (None, None, None)
             results.append(ReproductionResult(case.finding_index, status, case.condition, case.oracle,
-                                              expected, observed, cleanup, round(time.monotonic() - started, 3)))
+                                              expected, observed, cleanup, round(time.monotonic() - started, 3),
+                                              *population))
     return _complete_evidence(plan, results)
+
+
+def _population(payload: dict[str, Any]) -> tuple[str | None, int | None, int | None]:
+    label, matching, total = (payload.get("population_label"), payload.get("matching_count"),
+                              payload.get("total_count"))
+    if (not isinstance(label, str) or not label.strip() or len(label.strip()) > 200
+            or type(matching) is not int or type(total) is not int
+            or total <= 0 or matching < 0 or matching > total):
+        return None, None, None
+    return label.strip(), matching, total
 
 
 def _complete_evidence(plan: ReproductionPlan, results: list[ReproductionResult]) -> ReproductionEvidence:
@@ -283,7 +300,8 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
             raise ValueError("reproduction references a missing finding") from exc
         confirmed.append(ReproducedFinding(finding.problem, finding.impact, finding.evidence,
                                            result.condition, result.oracle, result.expected,
-                                           result.observed, True))
+                                           result.observed, True, result.population_label,
+                                           result.matching_count, result.total_count))
     if confirmed:
         return replace(review, findings=(), reproduced_findings=tuple(confirmed))
     return replace(review, findings=(), reproduced_findings=(), risk="low",
@@ -331,7 +349,9 @@ try:
             cleanup = cleanup and str(getattr(row, check["field"])) == str(check["equals"])
     write({"status": "confirmed" if result.get("confirmed") else "refuted",
            "expected": str(result.get("expected", "")), "observed": str(result.get("observed", "")),
-           "cleanup_verified": cleanup})
+           "cleanup_verified": cleanup,
+           "population_label": result.get("population_label"),
+           "matching_count": result.get("matching_count"), "total_count": result.get("total_count")})
 except Exception as exc:
     write({"status": "inconclusive", "expected": "", "observed": f"{type(exc).__name__}: {exc}",
            "cleanup_verified": False})

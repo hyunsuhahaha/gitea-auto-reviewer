@@ -146,6 +146,9 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
                 "expected": {"type": "string", "maxLength": 1000},
                 "observed": {"type": "string", "minLength": 1, "maxLength": 1000},
                 "cleanup_verified": {"type": "boolean", "const": True},
+                "population_label": {"type": ["string", "null"], "maxLength": 200},
+                "matching_count": {"type": ["integer", "null"], "minimum": 0},
+                "total_count": {"type": ["integer", "null"], "minimum": 1},
             },
         },
     },
@@ -234,16 +237,23 @@ class ReproducedFinding:
     expected: str
     observed: str
     cleanup_verified: bool
+    population_label: str | None = None
+    matching_count: int | None = None
+    total_count: int | None = None
 
     @classmethod
     def from_value(cls, value: object) -> "ReproducedFinding":
-        names = {"problem", "impact", "evidence", "condition", "oracle", "expected", "observed", "cleanup_verified"}
-        if not isinstance(value, dict) or set(value) != names or value["cleanup_verified"] is not True:
+        required = {"problem", "impact", "evidence", "condition", "oracle", "expected", "observed", "cleanup_verified"}
+        optional = {"population_label", "matching_count", "total_count"}
+        if (not isinstance(value, dict) or not required <= set(value) <= required | optional
+                or value["cleanup_verified"] is not True):
             raise ValueError("invalid reproduced finding")
+        population = _population(value.get("population_label"), value.get("matching_count"),
+                                 value.get("total_count"))
         return cls(_text(value["problem"], "problem"), _text(value["impact"], "impact"),
                    _references(value["evidence"], True), _text(value["condition"], "condition"),
                    _text(value["oracle"], "oracle"), _short_text(value["expected"], "expected", empty=True),
-                   _text(value["observed"], "observed"), True)
+                   _text(value["observed"], "observed"), True, *population)
 
 
 @dataclass(frozen=True)
@@ -346,6 +356,13 @@ class Review:
 
 def _count(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _population(label: object, matching: object, total: object) -> tuple[str | None, int | None, int | None]:
+    if (not isinstance(label, str) or not label.strip() or len(label.strip()) > 200
+            or not _count(matching) or not _count(total) or total == 0 or matching > total):
+        return None, None, None
+    return label.strip(), matching, total
 
 
 def _paths(value: object) -> tuple[str, ...]:
@@ -585,6 +602,13 @@ def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...]) -> list
         lines.extend(f"  {index}. {condition}" for index, condition in enumerate(
             (line.strip() for line in finding.condition.splitlines() if line.strip()), start=1
         ))
+        if (finding.population_label is not None and finding.matching_count is not None
+                and finding.total_count is not None):
+            rate = finding.matching_count / finding.total_count * 100
+            lines.append(
+                f"  버그 조건 충족률: {finding.population_label} "
+                f"{finding.matching_count:,}/{finding.total_count:,}건 ({rate:.2f}%)"
+            )
         lines.append(f"  관찰 결과: {finding.observed}")
         lines.append("  롤백 검증: 통과")
         lines.extend(f"  └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))

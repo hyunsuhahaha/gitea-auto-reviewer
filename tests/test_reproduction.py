@@ -11,6 +11,7 @@ from gitea_auto_reviewer.reproduction import (
     ReproductionResult,
     VerificationDecision,
     _RUNNER_SOURCE,
+    _population,
     build_plan_prompt,
     finalize_review,
     plan_reproductions,
@@ -143,7 +144,8 @@ def test_reproduction_script_allows_in_memory_string_replacement() -> None:
 def test_finalize_keeps_only_confirmed_cleanup_verified_findings() -> None:
     review = Review.from_json(json.dumps(impact_payload()))
     evidence = ReproductionEvidence(SHA, (
-        ReproductionResult(0, "confirmed", "기존 행", "성공", "성공", "오류 응답", True, 1.2),
+        ReproductionResult(0, "confirmed", "기존 행", "성공", "성공", "오류 응답", True, 1.2,
+                           "포장 투입 버킷", 467, 2481),
     ))
     final = finalize_review(review, evidence)
     rendered = render_markdown(final, 1, SHA, "테스트")
@@ -151,7 +153,14 @@ def test_finalize_keeps_only_confirmed_cleanup_verified_findings() -> None:
     assert len(final.reproduced_findings) == 1
     assert "재현된 문제" in rendered
     assert "관찰 결과: 오류 응답" in rendered
+    assert "버그 조건 충족률: 포장 투입 버킷 467/2,481건 (18.82%)" in rendered
     assert "롤백 검증: 통과" in rendered
+
+
+def test_invalid_population_is_ignored_without_changing_reproduction_status() -> None:
+    assert _population({"population_label": "버킷", "matching_count": 2, "total_count": 1}) == (
+        None, None, None,
+    )
 
 
 def test_finalize_suppresses_refuted_or_unverified_findings() -> None:
