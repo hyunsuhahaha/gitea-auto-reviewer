@@ -235,6 +235,17 @@ are no candidates, that Codex call is skipped. After candidate findings are
 executed, the independent rejection pass uses low effort to disprove or retain
 only those reproduced findings.
 
+These defaults can be changed without modifying code. Set the following Gitea
+Actions repository variables to `low`, `medium`, or `high`:
+
+- `AI_REVIEW_FIRST_PASS_EFFORT` (default: `medium`)
+- `AI_REVIEW_PLAN_EFFORT` (default: `medium`)
+- `AI_REVIEW_VERIFY_EFFORT` (default: `low`)
+
+An individual CLI call can override its value with `--reasoning-effort`. Run
+`gitea-auto-reviewer reasoning` to print the effective settings. The example
+workflow also prints them in the `Show Codex reasoning settings` step.
+
 Generate a structured review:
 
 ```bash

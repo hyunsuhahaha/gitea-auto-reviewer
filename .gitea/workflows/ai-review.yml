@@ -29,6 +29,9 @@ jobs:
       UV_EXE: C:\gitea\ai-review\.venv\Scripts\uv.exe
       CI_PYTHON: .\.venv-ci\Scripts\python.exe
       GITNEXUS_EXE: C:\Users\GiteaAIReview\AppData\Roaming\npm\gitnexus.cmd
+      AI_REVIEW_FIRST_PASS_EFFORT: ${{ vars.AI_REVIEW_FIRST_PASS_EFFORT }}
+      AI_REVIEW_PLAN_EFFORT: ${{ vars.AI_REVIEW_PLAN_EFFORT }}
+      AI_REVIEW_VERIFY_EFFORT: ${{ vars.AI_REVIEW_VERIFY_EFFORT }}
     steps:
       - name: Resolve PR metadata
         id: metadata
@@ -120,6 +123,9 @@ jobs:
             --input "$env:MIGRATION_FILE" `
             --input "$env:PYTEST_FILE" `
             --output "$env:EVIDENCE_FILE"
+
+      - name: Show Codex reasoning settings
+        run: "& $env:REVIEWER_EXE reasoning"
 
       - name: Generate first-pass Codex findings
         env:

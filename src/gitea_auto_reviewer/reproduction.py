@@ -173,17 +173,19 @@ Candidate review JSON:
 """
 
 
-def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_binary: str, gitnexus_binary: str) -> ReproductionPlan:
+def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_binary: str,
+                       gitnexus_binary: str, reasoning_effort: str = "medium") -> ReproductionPlan:
     if not review.findings:
         return ReproductionPlan(validate_sha(head_sha), ())
     raw = run_codex_json(build_plan_prompt(review, head_sha), PLAN_SCHEMA, repository, codex_binary,
-                         fixed_fields={"version": 1, "head_sha": head_sha}, reasoning_effort="medium",
+                         fixed_fields={"version": 1, "head_sha": head_sha}, reasoning_effort=reasoning_effort,
                          gitnexus_binary=gitnexus_binary)
     return ReproductionPlan.from_json(raw, len(review.findings))
 
 
 def verify_reproductions(review: Review, evidence: ReproductionEvidence, repository: Path,
-                         codex_binary: str, gitnexus_binary: str) -> VerificationDecision:
+                         codex_binary: str, gitnexus_binary: str,
+                         reasoning_effort: str = "low") -> VerificationDecision:
     confirmed = [item for item in evidence.results if item.status == "confirmed" and item.cleanup_verified]
     if not confirmed:
         return VerificationDecision(evidence.head_sha, ())
@@ -199,7 +201,7 @@ Reproduction evidence:
 """
     raw = run_codex_json(prompt, VERIFICATION_SCHEMA, repository, codex_binary,
                          fixed_fields={"version": 1, "head_sha": evidence.head_sha},
-                         reasoning_effort="low", gitnexus_binary=gitnexus_binary)
+                         reasoning_effort=reasoning_effort, gitnexus_binary=gitnexus_binary)
     return VerificationDecision.from_json(raw, evidence)
 
 

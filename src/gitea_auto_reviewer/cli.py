@@ -62,6 +62,8 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--evidence-file", type=Path, required=True)
     review.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     review.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
+    review.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
+                        default=_reasoning_effort("AI_REVIEW_FIRST_PASS_EFFORT", "medium"))
     review.add_argument("--max-diff-bytes", type=int, default=1_000_000)
 
     plan = subparsers.add_parser("plan", help="ask Codex for rollback-only reproduction cases")
@@ -71,6 +73,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--repo-dir", type=Path, default=Path.cwd())
     plan.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     plan.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
+    plan.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
+                      default=_reasoning_effort("AI_REVIEW_PLAN_EFFORT", "medium"))
 
     reproduce = subparsers.add_parser("reproduce", help="execute reproduction cases with forced rollback")
     reproduce.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -89,6 +93,10 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--repo-dir", type=Path, default=Path.cwd())
     verify.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     verify.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
+    verify.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
+                        default=_reasoning_effort("AI_REVIEW_VERIFY_EFFORT", "low"))
+
+    subparsers.add_parser("reasoning", help="show the configured Codex reasoning efforts")
 
     finalize = subparsers.add_parser("finalize", help="publish only rollback-verified findings")
     finalize.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -116,6 +124,13 @@ def _env_int(name: str) -> int | None:
         return int(value)
     except ValueError:
         return None
+
+
+def _reasoning_effort(name: str, fallback: str) -> str:
+    value = os.getenv(name, "").strip().lower() or fallback
+    if value not in {"low", "medium", "high"}:
+        raise ValueError(f"{name} must be low, medium, or high")
+    return value
 
 
 def _required(value: object, name: str):
@@ -159,6 +174,7 @@ def review_command(arguments: argparse.Namespace) -> None:
         arguments.repo_dir.resolve(),
         arguments.codex_binary,
         fixed_fields=fixed_fields,
+        reasoning_effort=arguments.reasoning_effort,
         gitnexus_binary=arguments.gitnexus_binary,
     )
     validate_grounding(result, arguments.repo_dir.resolve(), context.policy)
@@ -251,7 +267,8 @@ def plan_command(arguments: argparse.Namespace) -> None:
     review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
     assert_logged_in(arguments.codex_binary)
     plan = plan_reproductions(review, head_sha, arguments.repo_dir.resolve(),
-                              arguments.codex_binary, arguments.gitnexus_binary)
+                              arguments.codex_binary, arguments.gitnexus_binary,
+                              arguments.reasoning_effort)
     arguments.output.write_text(plan.to_json() + "\n", encoding="utf-8")
     print(f"Reproduction plan written to {arguments.output}")
 
@@ -288,7 +305,8 @@ def verify_command(arguments: argparse.Namespace) -> None:
         raise ValueError("reproduction evidence belongs to a different PR head SHA")
     assert_logged_in(arguments.codex_binary)
     decision = verify_reproductions(review, evidence, arguments.repo_dir.resolve(),
-                                    arguments.codex_binary, arguments.gitnexus_binary)
+                                    arguments.codex_binary, arguments.gitnexus_binary,
+                                    arguments.reasoning_effort)
     arguments.output.write_text(decision.to_json() + "\n", encoding="utf-8")
     print(f"Verification written to {arguments.output}")
 
@@ -314,6 +332,10 @@ def main(argv: list[str] | None = None) -> int:
             verify_command(arguments)
         elif arguments.command == "finalize":
             finalize_command(arguments)
+        elif arguments.command == "reasoning":
+            print(f"first-pass={_reasoning_effort('AI_REVIEW_FIRST_PASS_EFFORT', 'medium')}")
+            print(f"plan={_reasoning_effort('AI_REVIEW_PLAN_EFFORT', 'medium')}")
+            print(f"verify={_reasoning_effort('AI_REVIEW_VERIFY_EFFORT', 'low')}")
         else:
             comment_command(arguments)
         return 0

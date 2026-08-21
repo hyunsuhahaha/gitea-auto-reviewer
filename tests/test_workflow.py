@@ -16,6 +16,10 @@ def test_workflow_supports_manual_review_of_existing_pr() -> None:
     assert "Run migration check" in workflow
     assert "Run pytest" in workflow
     assert "Combine deterministic evidence" in workflow
+    assert "Show Codex reasoning settings" in workflow
+    assert "vars.AI_REVIEW_FIRST_PASS_EFFORT" in workflow
+    assert "vars.AI_REVIEW_PLAN_EFFORT" in workflow
+    assert "vars.AI_REVIEW_VERIFY_EFFORT" in workflow
     first = workflow.index("Generate first-pass Codex findings")
     reproduce = workflow.index("Reproduce candidate findings with rollback")
     verify = workflow.index("Verify reproduced findings with Codex")
