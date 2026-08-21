@@ -136,7 +136,10 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
         },
         "reproducedFinding": {
             "type": "object", "additionalProperties": False,
-            "required": ["problem", "impact", "evidence", "condition", "oracle", "expected", "observed", "cleanup_verified"],
+            "required": [
+                "problem", "impact", "evidence", "condition", "oracle", "expected", "observed",
+                "cleanup_verified", "population_label", "matching_count", "total_count",
+            ],
             "properties": {
                 "problem": {"type": "string", "minLength": 1, "maxLength": 500},
                 "impact": {"type": "string", "minLength": 1, "maxLength": 500},

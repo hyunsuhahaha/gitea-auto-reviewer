@@ -89,6 +89,20 @@ def test_codex_schema_const_nodes_declare_a_type() -> None:
     visit(REVIEW_JSON_SCHEMA)
 
 
+def test_codex_schema_requires_every_object_property() -> None:
+    def visit(value: object) -> None:
+        if isinstance(value, dict):
+            if value.get("type") == "object" and "properties" in value:
+                assert set(value.get("required", [])) == set(value["properties"])
+            for child in value.values():
+                visit(child)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child)
+
+    visit(REVIEW_JSON_SCHEMA)
+
+
 def test_review_renders_compact_change_impact_summary() -> None:
     payload = impact_payload()
     finding = payload["findings"][0]
