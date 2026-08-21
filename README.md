@@ -228,7 +228,7 @@ combines their SHA-bound JSON files with `evidence-merge`. This makes Django,
 migration, and pytest duration visible independently without changing the
 final evidence consumed by Codex.
 
-The first Codex pass uses high reasoning effort for repository and boundary
+The first Codex pass uses medium reasoning effort for repository and boundary
 analysis. Reproduction planning uses medium effort because it converts existing
 findings into test harnesses rather than discovering new findings; when there
 are no candidates, that Codex call is skipped. After candidate findings are
@@ -425,7 +425,7 @@ only the demonstrated problem, its operational impact, and real `file:line` loca
 Policy findings must quote an exact rule from the base `AI_REVIEW.md`. The
 program verifies files, line ranges, and policy quotations before publication.
 Style, naming, and generic improvement opinions are forbidden. Risk and
-confidence remain separate. Codex runs with high reasoning effort and must
+confidence remain separate. Codex runs with medium reasoning effort and must
 evaluate changed conditions at equality/null/minimum/maximum boundaries, then
 trace newly admitted states through callers before assigning risk.
 Deterministic CI facts take precedence. A second independent read-only Codex

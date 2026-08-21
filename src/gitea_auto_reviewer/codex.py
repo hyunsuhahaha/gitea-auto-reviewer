@@ -62,7 +62,7 @@ def run_codex_review(
     codex_binary: str = "codex",
     temp_root: Path | None = None,
     fixed_fields: dict[str, Any] | None = None,
-    reasoning_effort: str = "high",
+    reasoning_effort: str = "medium",
     gitnexus_binary: str = "gitnexus",
 ) -> Review:
     raw = run_codex_json(
@@ -79,7 +79,7 @@ def run_codex_json(
     codex_binary: str = "codex",
     temp_root: Path | None = None,
     fixed_fields: dict[str, Any] | None = None,
-    reasoning_effort: str = "high",
+    reasoning_effort: str = "medium",
     gitnexus_binary: str = "gitnexus",
 ) -> str:
     """Run one read-only Codex turn and return validated-shape JSON text."""

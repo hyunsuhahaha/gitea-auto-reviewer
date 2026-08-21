@@ -52,7 +52,7 @@ def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: P
 
     assert review.risk == "low"
     assert "--sandbox" in captured["command"]
-    assert captured["command"][captured["command"].index("--config") + 1] == 'model_reasoning_effort="high"'
+    assert captured["command"][captured["command"].index("--config") + 1] == 'model_reasoning_effort="medium"'
     assert "read-only" in captured["command"]
     assert captured["command"][captured["command"].index("--cd") + 1] == str(repository)
     assert "--skip-git-repo-check" not in captured["command"]
