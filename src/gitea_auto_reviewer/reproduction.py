@@ -77,7 +77,7 @@ class ReproductionPlan:
                 raise ValueError("invalid reproduction case")
             index = item["finding_index"]
             if type(index) is not int or not 0 <= index < finding_count or index in indexes:
-                raise ValueError("invalid or duplicate finding index")
+                continue
             condition, oracle, script = item["condition"], item["oracle"], item["script"]
             if not all(isinstance(text, str) and text.strip() for text in (condition, oracle, script)):
                 raise ValueError("reproduction case text must not be empty")
@@ -152,6 +152,7 @@ def build_plan_prompt(review: Review, head_sha: str) -> str:
 The repository is already checked out at PR head {head_sha}. Inspect it, including GitNexus MCP context.
 
 Return at most 3 cases, only for findings that can be objectively reproduced by importing Django and directly calling ORM/service/view code against the configured test database. Skip subjective, destructive, external-network, browser-only, or schema-incompatible cases.
+`finding_index` is the zero-based position in the candidate review's `findings` array. Return at most one case for each finding and never invent an index outside that array.
 
 Write every user-visible explanation in Korean. In particular, `condition`, `oracle`, and the script's returned `expected` and `observed` strings must be Korean. Keep code identifiers and concrete values unchanged when needed. Write `condition` as 1-6 concise, unnumbered lines describing the minimal generalized data state and final action required for the bug; never combine them into a paragraph. Do not present arbitrary fixture values chosen by the reproduction script as required conditions. Omit exact quantities, IDs, dates, and ratios unless that exact value or boundary is causally required for the bug. Put chosen example values and calculations only in `observed`.
 

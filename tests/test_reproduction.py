@@ -73,6 +73,23 @@ def test_plan_is_sha_bound_and_rejects_process_execution() -> None:
         validate_script("print('side effect')\ndef reproduce():\n    return {}\n")
 
 
+def test_plan_ignores_duplicate_and_out_of_range_finding_indexes() -> None:
+    case = {
+        "condition": "조건",
+        "oracle": "기대 결과",
+        "script": "def reproduce():\n    return {'confirmed': False, 'expected': '정상', 'observed': '정상', 'cleanup_checks': []}\n",
+    }
+    raw = json.dumps({"version": 1, "head_sha": SHA, "cases": [
+        {"finding_index": 0, **case},
+        {"finding_index": 0, **case},
+        {"finding_index": 4, **case},
+    ]})
+
+    plan = ReproductionPlan.from_json(raw, finding_count=2)
+
+    assert [item.finding_index for item in plan.cases] == [0]
+
+
 def test_reproduction_script_allows_in_memory_string_replacement() -> None:
     validate_script(
         "def reproduce():\n"
