@@ -170,8 +170,11 @@ Candidate review JSON:
 
 
 def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_binary: str, gitnexus_binary: str) -> ReproductionPlan:
+    if not review.findings:
+        return ReproductionPlan(validate_sha(head_sha), ())
     raw = run_codex_json(build_plan_prompt(review, head_sha), PLAN_SCHEMA, repository, codex_binary,
-                         fixed_fields={"version": 1, "head_sha": head_sha}, gitnexus_binary=gitnexus_binary)
+                         fixed_fields={"version": 1, "head_sha": head_sha}, reasoning_effort="medium",
+                         gitnexus_binary=gitnexus_binary)
     return ReproductionPlan.from_json(raw, len(review.findings))
 
 

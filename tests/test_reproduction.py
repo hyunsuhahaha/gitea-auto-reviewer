@@ -13,6 +13,7 @@ from gitea_auto_reviewer.reproduction import (
     _RUNNER_SOURCE,
     build_plan_prompt,
     finalize_review,
+    plan_reproductions,
     _complete_evidence,
     validate_script,
 )
@@ -98,6 +99,37 @@ def test_plan_accepts_every_candidate_finding() -> None:
     ]})
 
     assert len(ReproductionPlan.from_json(raw, finding_count=5).cases) == 5
+
+
+def test_plan_skips_codex_when_there_are_no_findings(monkeypatch, tmp_path) -> None:
+    payload = impact_payload()
+    payload["findings"] = []
+    monkeypatch.setattr(
+        "gitea_auto_reviewer.reproduction.run_codex_json",
+        lambda *args, **kwargs: pytest.fail("Codex must not run without findings"),
+    )
+
+    plan = plan_reproductions(
+        Review.from_json(json.dumps(payload)), SHA, tmp_path, "codex", "gitnexus",
+    )
+
+    assert plan == ReproductionPlan(SHA, ())
+
+
+def test_plan_uses_medium_reasoning(monkeypatch, tmp_path) -> None:
+    captured = {}
+
+    def fake_codex(*args, **kwargs):
+        captured.update(kwargs)
+        return json.dumps({"version": 1, "head_sha": SHA, "cases": []})
+
+    monkeypatch.setattr("gitea_auto_reviewer.reproduction.run_codex_json", fake_codex)
+
+    plan_reproductions(
+        Review.from_json(json.dumps(impact_payload())), SHA, tmp_path, "codex", "gitnexus",
+    )
+
+    assert captured["reasoning_effort"] == "medium"
 
 
 def test_reproduction_script_allows_in_memory_string_replacement() -> None:
