@@ -46,11 +46,13 @@ pull_request_target on trusted base workflow
                           │
                  candidate-review.json
                           │
-                 Codex reproduction plan
+                 Codex reproduction plan (medium)
+                 no candidates: skip Codex call
                           │
                direct Django view/ORM calls
                test DB + transaction.atomic()
                forced rollback + cleanup check
+               optional natural-data condition count
                           │
                 Codex rejection pass (low)
                 reads reproduction evidence
@@ -63,6 +65,7 @@ pull_request_target on trusted base workflow
                     Gitea token: yes
                           │
                  create/update PR comment
+                 preserve reproduced findings at same SHA
 ```
 
 The CLI stages run sequentially in one Windows job:
@@ -71,7 +74,7 @@ The CLI stages run sequentially in one Windows job:
 gitea-auto-reviewer index ...    # build/update the PR-head code graph
 gitea-auto-reviewer evidence ... # trusted internal PR execution, sanitized child environment
 gitea-auto-reviewer review ...   # Codex session, consumes evidence, no Gitea credential
-gitea-auto-reviewer plan ...     # Codex writes up to 3 objective reproduction cases
+gitea-auto-reviewer plan ...     # Codex plans every objectively reproducible finding
 gitea-auto-reviewer reproduce ...# CI Python executes cases and forces DB rollback
 gitea-auto-reviewer verify ...   # low-effort Codex pass challenges reproduced findings
 gitea-auto-reviewer finalize ... # retain confirmed + cleanup-verified findings only
@@ -226,8 +229,11 @@ migration, and pytest duration visible independently without changing the
 final evidence consumed by Codex.
 
 The first Codex pass uses high reasoning effort for repository and boundary
-analysis. After candidate findings are executed, the independent rejection
-pass uses low effort to disprove or retain only those reproduced findings.
+analysis. Reproduction planning uses medium effort because it converts existing
+findings into test harnesses rather than discovering new findings; when there
+are no candidates, that Codex call is skipped. After candidate findings are
+executed, the independent rejection pass uses low effort to disprove or retain
+only those reproduced findings.
 
 Generate a structured review:
 
@@ -292,6 +298,15 @@ Only `confirmed` results whose cleanup checks pass are rendered under
 kept out of the PR comment. PostgreSQL sequence values can still have gaps;
 sequences are not transactional.
 
+There is no three-case cap: every first-pass finding that can be reproduced
+objectively may receive a case. An invalid or duplicate model-produced finding
+index is discarded without failing the rest of the review. Reproduction
+conditions describe generalized prerequisites rather than arbitrary fixture
+values. When a defensible ORM population can be counted before mutation, the
+report also shows a program-calculated prevalence line such as
+`버그 조건 충족률: 포장 투입 버킷 467/2,481건 (18.82%)`. This number is
+informational and never controls whether a finding is published.
+
 Post or update the bot comment:
 
 ```bash
@@ -320,6 +335,11 @@ index, CI, Codex, rollback-reproduction, finalize, and comment stages. This can
 update the review comment on a merged PR without reopening it or creating a
 test commit. The original head commit must still be available in the Gitea
 repository.
+
+Each run copies available intermediate JSON files to
+`C:\gitea\ai-review\debug-runs\<GITHUB_RUN_ID>` in the final `always()` step so
+failed planning and reproduction runs can be diagnosed after the Actions
+workspace is removed.
 
 ## Change-impact format
 
@@ -362,9 +382,15 @@ API Contract     변경
 • Product.remark 추가
 • 상품 등록·조회 API 변경
 
-주의
-• 기존 Product 생성 경로가 remark를 전달하지 않음
-  영향: 상품 생성이 실패할 수 있음
+재현된 문제
+• 기존 Product 생성 경로가 remark를 전달하지 않아 생성 요청이 실패함
+  영향: 기존 상품 등록 경로에서 상품 생성이 중단됨
+  재현에 사용한 조건
+  1. remark를 전달하지 않는 기존 상품 생성 경로가 존재한다
+  2. 해당 경로로 상품 생성을 요청한다
+  버그 조건 충족률: 기존 상품 생성 경로 4/12건 (33.33%)
+  관찰 결과: 필수 필드 오류 응답 확인
+  롤백 검증: 통과
   └ product/models.py:31
   └ product/services.py:18
 
@@ -385,6 +411,13 @@ runs update the existing comment without a database:
 <!-- gitea-auto-reviewer:pr=42:sha=abc123... -->
 ```
 
+The bot comment also carries hidden structured state for reproduced findings.
+On another run of the same PR head SHA, previously reproduced findings are
+merged with newly reproduced findings instead of disappearing when a fresh AI
+pass misses them. A different head SHA starts a new result set; results that
+disappeared before this state format was introduced cannot be recovered
+automatically.
+
 To reduce confident but low-value commentary, findings disappear when none
 qualify. Only concrete bugs, security issues, performance issues, dependency
 problems, and explicit base-policy violations are allowed. Each finding contains
@@ -395,9 +428,9 @@ Style, naming, and generic improvement opinions are forbidden. Risk and
 confidence remain separate. Codex runs with high reasoning effort and must
 evaluate changed conditions at equality/null/minimum/maximum boundaries, then
 trace newly admitted states through callers before assigning risk.
-Deterministic CI facts take precedence. A
-second independent read-only Codex pass tries to disprove every draft finding;
-it may only retain a finding verbatim or delete it, never add or rewrite one.
+Deterministic CI facts take precedence. A second independent read-only Codex
+pass tries to disprove every successfully reproduced finding; it may only
+retain a finding verbatim or delete it, never add or rewrite one.
 The final `영향 파일` section lists at most five unchanged files with a
 GitNexus-confirmed caller, callee, or affected-process relationship. Changed
 files, generic utilities, import-only links, and unverified relationships are
@@ -420,7 +453,7 @@ This prevents a PR from changing the instructions used to review itself.
 ## Evidence boundary and future inputs
 
 The context contains the read-only repository, GitNexus code graph, diff, base policy, and
-SHA-bound evidence from isolated CI. v0.1 implements Django check, migration
+SHA-bound evidence from isolated CI. v0.2 implements Django check, migration
 check, and pytest. Future versions can add normalized Ruff and Semgrep results.
 It does not add a provider interface, web server, database, or analysis framework.
 
