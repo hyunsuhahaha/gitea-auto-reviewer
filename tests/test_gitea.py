@@ -38,6 +38,17 @@ def test_upsert_creates_comment_when_marker_is_absent() -> None:
     assert methods == ["GET", "POST"]
 
 
+def test_get_review_comment_returns_existing_body() -> None:
+    body = "<!-- gitea-auto-reviewer:pr=42:sha=abc -->\nReview"
+
+    def transport(request, timeout):
+        return json.dumps([{"id": 7, "body": body}]).encode()
+
+    client = GiteaClient("https://gitea.example", "owner/repo", "token", transport)
+
+    assert client.get_review_comment(42) == body
+
+
 def test_get_pull_request_returns_review_metadata() -> None:
     def transport(request, timeout):
         assert request.method == "GET"

@@ -22,7 +22,7 @@ PLAN_SCHEMA: dict[str, Any] = {
     "properties": {
         "version": {"type": "integer", "const": 1},
         "head_sha": {"type": "string"},
-        "cases": {"type": "array", "maxItems": 3, "items": {
+        "cases": {"type": "array", "items": {
             "type": "object", "additionalProperties": False,
             "required": ["finding_index", "condition", "oracle", "script"],
             "properties": {
@@ -42,7 +42,7 @@ VERIFICATION_SCHEMA: dict[str, Any] = {
         "version": {"type": "integer", "const": 1},
         "head_sha": {"type": "string"},
         "accepted_finding_indices": {
-            "type": "array", "maxItems": 3,
+            "type": "array",
             "items": {"type": "integer", "minimum": 0, "maximum": 4},
         },
     },
@@ -68,8 +68,8 @@ class ReproductionPlan:
         if not isinstance(value, dict) or set(value) != {"version", "head_sha", "cases"} or value["version"] != 1:
             raise ValueError("invalid reproduction plan")
         cases = value["cases"]
-        if not isinstance(cases, list) or len(cases) > 3:
-            raise ValueError("reproduction plan must contain at most three cases")
+        if not isinstance(cases, list):
+            raise ValueError("reproduction plan cases must be a list")
         parsed: list[ReproductionCase] = []
         indexes: set[int] = set()
         for item in cases:
@@ -151,7 +151,7 @@ def build_plan_prompt(review: Review, head_sha: str) -> str:
     return f"""You are planning rollback-only reproductions for candidate code-review findings.
 The repository is already checked out at PR head {head_sha}. Inspect it, including GitNexus MCP context.
 
-Return at most 3 cases, only for findings that can be objectively reproduced by importing Django and directly calling ORM/service/view code against the configured test database. Skip subjective, destructive, external-network, browser-only, or schema-incompatible cases.
+Return one case for every finding that can be objectively reproduced by importing Django and directly calling ORM/service/view code against the configured test database. Skip subjective, destructive, external-network, browser-only, or schema-incompatible cases.
 `finding_index` is the zero-based position in the candidate review's `findings` array. Return at most one case for each finding and never invent an index outside that array.
 
 Write every user-visible explanation in Korean. In particular, `condition`, `oracle`, and the script's returned `expected` and `observed` strings must be Korean. Keep code identifiers and concrete values unchanged when needed. Write `condition` as 1-6 concise, unnumbered lines describing the minimal generalized data state and final action required for the bug; never combine them into a paragraph. Do not present arbitrary fixture values chosen by the reproduction script as required conditions. Omit exact quantities, IDs, dates, and ratios unless that exact value or boundary is causally required for the bug. Put chosen example values and calculations only in `observed`.

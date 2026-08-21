@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import re
 import unicodedata
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
@@ -68,7 +70,7 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
         "risk_evidence": {"$ref": "#/$defs/references"},
         "key_changes": {"$ref": "#/$defs/requiredItems"},
         "findings": {"$ref": "#/$defs/findings"},
-        "reproduced_findings": {"type": "array", "maxItems": 3, "items": {"$ref": "#/$defs/reproducedFinding"}},
+        "reproduced_findings": {"type": "array", "items": {"$ref": "#/$defs/reproducedFinding"}},
         "affected_files": {"$ref": "#/$defs/affectedFiles"},
     },
     "$defs": {
@@ -385,9 +387,25 @@ def _findings(value: object) -> tuple[Finding, ...]:
 
 
 def _reproduced_findings(value: object) -> tuple[ReproducedFinding, ...]:
-    if not isinstance(value, list) or len(value) > 3:
-        raise ValueError("reproduced_findings must contain 0-3 items")
+    if not isinstance(value, list):
+        raise ValueError("reproduced_findings must be a list")
     return tuple(ReproducedFinding.from_value(item) for item in value)
+
+
+def preserve_reproduced_findings(review: Review, previous_comment: str | None, head_sha: str) -> Review:
+    if not previous_comment or f"<!-- gitea-auto-reviewer:pr=" not in previous_comment \
+            or f":sha={head_sha} -->" not in previous_comment:
+        return review
+    match = re.search(r"<!-- gitea-auto-reviewer-state:([A-Za-z0-9+/=]+) -->", previous_comment)
+    if not match:
+        return review
+    try:
+        value = json.loads(base64.b64decode(match.group(1), validate=True).decode("utf-8"))
+        previous = _reproduced_findings(value)
+    except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return review
+    merged = tuple(dict.fromkeys((*previous, *review.reproduced_findings)))
+    return replace(review, reproduced_findings=merged)
 
 
 def _impact_details(value: object) -> tuple[ImpactDetail, ...]:
@@ -540,7 +558,11 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
-    return f"{marker}\n\n```text\n" + "\n".join(lines).rstrip() + "\n```"
+    state = base64.b64encode(json.dumps(
+        [asdict(item) for item in review.reproduced_findings], ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")).decode("ascii")
+    return f"{marker}\n<!-- gitea-auto-reviewer-state:{state} -->\n\n```text\n" + "\n".join(lines).rstrip() + "\n```"
 
 
 def _finding_section(findings: tuple[Finding, ...]) -> list[str]:

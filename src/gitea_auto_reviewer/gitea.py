@@ -64,10 +64,10 @@ class GiteaClient:
         if pr_number < 1:
             raise ValueError("PR number must be positive")
         marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:"
-        comment_id = self._find_comment(pr_number, marker)
-        if comment_id is not None:
+        comment = self._find_comment(pr_number, marker)
+        if comment is not None:
             try:
-                self._request("PATCH", f"/repos/{self.repository}/issues/comments/{comment_id}", {"body": body})
+                self._request("PATCH", f"/repos/{self.repository}/issues/comments/{comment[0]}", {"body": body})
                 return "updated"
             except GiteaAPIError as exc:
                 if exc.status != 403:
@@ -75,6 +75,10 @@ class GiteaClient:
                 # A user can imitate the marker, but cannot make the bot edit their comment.
         self._request("POST", f"/repos/{self.repository}/issues/{pr_number}/comments", {"body": body})
         return "created"
+
+    def get_review_comment(self, pr_number: int) -> str | None:
+        comment = self._find_comment(pr_number, f"<!-- gitea-auto-reviewer:pr={pr_number}:")
+        return comment[1] if comment else None
 
     def get_pull_request(self, pr_number: int) -> PullRequestMetadata:
         if pr_number < 1:
@@ -111,7 +115,7 @@ class GiteaClient:
             raise GiteaAPIError(0, "Gitea returned an invalid merge commit parent")
         return parent_sha
 
-    def _find_comment(self, pr_number: int, marker: str) -> int | None:
+    def _find_comment(self, pr_number: int, marker: str) -> tuple[int, str] | None:
         # ponytail: inspect at most 500 comments; add full pagination if real PRs exceed this.
         for page in range(1, 11):
             comments = self._request(
@@ -124,7 +128,7 @@ class GiteaClient:
                 if isinstance(comment, dict) and marker in str(comment.get("body", "")):
                     identifier = comment.get("id")
                     if isinstance(identifier, int):
-                        return identifier
+                        return identifier, str(comment.get("body", ""))
             if len(comments) < 50:
                 return None
         return None

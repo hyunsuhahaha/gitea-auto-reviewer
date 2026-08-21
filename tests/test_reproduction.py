@@ -90,6 +90,16 @@ def test_plan_ignores_duplicate_and_out_of_range_finding_indexes() -> None:
     assert [item.finding_index for item in plan.cases] == [0]
 
 
+def test_plan_accepts_every_candidate_finding() -> None:
+    script = "def reproduce():\n    return {'confirmed': False, 'expected': '정상', 'observed': '정상', 'cleanup_checks': []}\n"
+    raw = json.dumps({"version": 1, "head_sha": SHA, "cases": [
+        {"finding_index": index, "condition": "조건", "oracle": "기준", "script": script}
+        for index in range(5)
+    ]})
+
+    assert len(ReproductionPlan.from_json(raw, finding_count=5).cases) == 5
+
+
 def test_reproduction_script_allows_in_memory_string_replacement() -> None:
     validate_script(
         "def reproduce():\n"

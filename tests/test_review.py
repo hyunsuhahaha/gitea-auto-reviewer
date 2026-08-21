@@ -5,6 +5,7 @@ import pytest
 from gitea_auto_reviewer.review import (
     REVIEW_JSON_SCHEMA,
     Review,
+    preserve_reproduced_findings,
     render_markdown,
     validate_grounding,
     validate_verification,
@@ -126,6 +127,29 @@ def test_review_renders_compact_change_impact_summary() -> None:
     assert rendered.rfind("영향 파일") > rendered.rfind("재현된 문제")
     assert "• app/views/product_admin.py" in rendered
     assert "Product 생성 호출자가 새 필드의 영향을 받음 — app/views/product_admin.py:52" in rendered
+
+
+def test_same_sha_preserves_previously_reproduced_findings() -> None:
+    payload = impact_payload()
+    finding = payload["findings"][0]
+    payload["reproduced_findings"] = [{
+        "problem": "이전 재현 문제", "impact": "이전 영향", "evidence": finding["evidence"],
+        "condition": "이전 조건", "oracle": "이전 기준", "expected": "정상",
+        "observed": "오류", "cleanup_verified": True,
+    }]
+    previous = render_markdown(Review.from_json(json.dumps(payload)), 95, "a" * 40, "테스트")
+    payload["reproduced_findings"] = [{
+        "problem": "새 재현 문제", "impact": "새 영향", "evidence": finding["evidence"],
+        "condition": "새 조건", "oracle": "새 기준", "expected": "정상",
+        "observed": "오류", "cleanup_verified": True,
+    }]
+
+    merged = preserve_reproduced_findings(
+        Review.from_json(json.dumps(payload)), previous, "a" * 40,
+    )
+
+    assert [item.problem for item in merged.reproduced_findings] == ["이전 재현 문제", "새 재현 문제"]
+    assert preserve_reproduced_findings(merged, previous, "b" * 40) is merged
 
 
 def test_not_run_is_explicit() -> None:
