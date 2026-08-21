@@ -97,23 +97,23 @@ class GiteaClient:
             raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata")
         if merged:
             # Gitea recomputes base.sha to the live base-branch tip once a PR is
-            # merged, so it no longer identifies the pre-merge base commit. Use
-            # the merge commit's first parent, which is that base-branch tip at
-            # the moment this PR was merged, instead.
+            # merged, and head.sha can follow a source branch that was reused.
+            # Freeze both sides to the merge commit's historical parents.
             if not isinstance(merge_commit_sha, str) or not merge_commit_sha:
                 raise GiteaAPIError(0, "Gitea returned a merged pull request without a merge commit")
-            base_sha = self._get_commit_parent(merge_commit_sha)
+            base_sha, head_sha = self._get_merge_parents(merge_commit_sha)
         return PullRequestMetadata(pr_number, title, base_sha, head_sha, head_repository)
 
-    def _get_commit_parent(self, sha: str) -> str:
+    def _get_merge_parents(self, sha: str) -> tuple[str, str]:
         value = self._request("GET", f"/repos/{self.repository}/git/commits/{sha}")
         try:
-            parent_sha = value["parents"][0]["sha"]
+            base_sha = value["parents"][0]["sha"]
+            head_sha = value["parents"][1]["sha"]
         except (KeyError, IndexError, TypeError) as exc:
-            raise GiteaAPIError(0, "Gitea returned a merge commit without a parent") from exc
-        if not isinstance(parent_sha, str) or not parent_sha:
-            raise GiteaAPIError(0, "Gitea returned an invalid merge commit parent")
-        return parent_sha
+            raise GiteaAPIError(0, "Gitea returned a merge commit without two parents") from exc
+        if not all(isinstance(item, str) and item for item in (base_sha, head_sha)):
+            raise GiteaAPIError(0, "Gitea returned invalid merge commit parents")
+        return base_sha, head_sha
 
     def _find_comment(self, pr_number: int, marker: str) -> tuple[int, str] | None:
         # ponytail: inspect at most 500 comments; add full pagination if real PRs exceed this.

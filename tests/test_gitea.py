@@ -75,7 +75,7 @@ def test_get_pull_request_uses_merge_commit_parent_when_merged() -> None:
             return json.dumps({
                 "title": "ERP PO allocation",
                 "base": {"sha": "c" * 40},
-                "head": {"sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+                "head": {"sha": "e" * 40, "repo": {"full_name": "owner/repo"}},
                 "merged": True,
                 "merge_commit_sha": "d" * 40,
             }).encode()
@@ -85,6 +85,7 @@ def test_get_pull_request_uses_merge_commit_parent_when_merged() -> None:
     metadata = GiteaClient("https://gitea.example", "owner/repo", "token", transport).get_pull_request(95)
 
     assert metadata.base_sha == "a" * 40
+    assert metadata.head_sha == "b" * 40
 
 
 def test_get_pull_request_rejects_merged_pull_request_without_merge_commit() -> None:
