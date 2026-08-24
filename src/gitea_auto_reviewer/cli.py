@@ -64,7 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
     review.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
                         default=_reasoning_effort("AI_REVIEW_FIRST_PASS_EFFORT", "medium"))
-    review.add_argument("--max-diff-bytes", type=int, default=1_000_000)
+    review.add_argument("--max-diff-bytes", type=int, default=10_000_000)
 
     plan = subparsers.add_parser("plan", help="ask Codex for rollback-only reproduction cases")
     plan.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))

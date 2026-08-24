@@ -106,7 +106,7 @@ v0.2 intentionally supports only:
 - PRs whose head and base belong to the same repository;
 - a preinstalled, audited version of this package;
 - a normal Markdown timeline comment;
-- a maximum diff size of 1 MB by default.
+- a maximum diff size of 10 MB by default.
 
 Only the evidence process executes PR code. Codex is never asked to run tests,
 builds, migrations, package managers, or project scripts. The Windows Server
@@ -137,7 +137,7 @@ Install one audited release under the existing runner service account.
 Do this during runner provisioning, not from a pull request:
 
 ```bash
-python -m pip install "gitea-auto-reviewer==0.2.0"
+python -m pip install "gitea-auto-reviewer==0.2.1"
 ```
 
 For development before a package is published:

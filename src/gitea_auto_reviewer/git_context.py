@@ -31,7 +31,7 @@ def collect_context(
     repository: Path,
     base_sha: str,
     head_sha: str,
-    max_diff_bytes: int = 1_000_000,
+    max_diff_bytes: int = 10_000_000,
 ) -> ReviewContext:
     base_sha = validate_sha(base_sha)
     head_sha = validate_sha(head_sha)
@@ -42,7 +42,7 @@ def collect_context(
         raise ValueError("repository must be checked out at the supplied PR head SHA")
     diff = _git(
         repository,
-        ["diff", "--no-ext-diff", "--unified=80", f"{base_sha}...{head_sha}", "--"],
+        ["diff", "--no-ext-diff", "--unified=3", f"{base_sha}...{head_sha}", "--"],
         required=True,
     )
     if not diff.strip():

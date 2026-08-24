@@ -25,7 +25,7 @@ def test_policy_is_read_from_base_commit(monkeypatch, tmp_path: Path) -> None:
     assert context.changed_files == 2
     assert context.changed_file_paths == ("a.py", "b.py")
     assert ["git", "show", f"{'a' * 40}:AI_REVIEW.md"] in calls
-    assert ["git", "diff", "--no-ext-diff", "--unified=80", f"{'a' * 40}...{'b' * 40}", "--"] in calls
+    assert ["git", "diff", "--no-ext-diff", "--unified=3", f"{'a' * 40}...{'b' * 40}", "--"] in calls
 
 
 def test_missing_policy_uses_safe_default(monkeypatch, tmp_path: Path) -> None:
