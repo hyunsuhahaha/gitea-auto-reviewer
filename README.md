@@ -4,13 +4,15 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![stdlib only](https://img.shields.io/badge/runtime%20deps-stdlib%20only-informational.svg)](pyproject.toml)
 
-**코드 변경으로 발생할 수 있는 데이터 정합성 문제를 실제 테스트 DB에서 재현하고
-검증하는 셀프 호스팅 Gitea PR 리뷰 소프트웨어입니다.**
+**GitNexus가 생성한 의존성 정적 분석 그래프를 Codex와 연동해 변경 영향 경로를
+추적하고, 코드 변경으로 발생할 수 있는 데이터 정합성 문제를 실제 테스트 DB에서
+재현·검증하는 셀프 호스팅 Gitea PR 리뷰 소프트웨어입니다.**
 
 대부분의 AI PR 리뷰어는 diff를 읽고 LLM의 의견을 그대로 게시합니다.
-`gitea-auto-reviewer`는 모든 발견 사항을 강제 롤백 트랜잭션 안의 실제 테스트
-데이터베이스에서 다시 실행하고, 재현된 문제만 PR 댓글에 게시합니다. 재현되지 않으면
-댓글에도 포함하지 않습니다.
+`gitea-auto-reviewer`는 GitNexus의 저장소 의존성 그래프로 변경된 코드의 호출자,
+피호출자 및 관련 프로세스를 추적합니다. 이어서 모든 발견 사항을 강제 롤백 트랜잭션
+안의 실제 테스트 데이터베이스에서 다시 실행하고, 재현된 문제만 PR 댓글에
+게시합니다. 재현되지 않으면 댓글에도 포함하지 않습니다.
 
 기존 Codex 구독을 셀프 호스팅 Gitea의 풀 리퀘스트 댓글과 연결해 다음 내용을
 검증합니다.
