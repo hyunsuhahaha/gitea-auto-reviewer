@@ -323,6 +323,16 @@ def test_renderer_states_when_no_reproduced_problem_survives() -> None:
     assert "재현된 문제\n• 자동 재현 및 2차 검증을 통과" in rendered
 
 
+def test_renderer_separates_unreproduced_static_findings() -> None:
+    rendered = render_markdown(
+        Review.from_json(json.dumps(impact_payload())), 1, "a" * 40, "테스트"
+    )
+
+    assert "정적 분석 발견 사항(미재현)" in rendered
+    assert "GitNexus 의존성 그래프와 저장소 코드에 근거" in rendered
+    assert "기존 Product 생성 경로가 remark를 전달하지 않음" in rendered
+
+
 def test_renderer_lists_reproduction_conditions() -> None:
     payload = impact_payload()
     payload["findings"] = []

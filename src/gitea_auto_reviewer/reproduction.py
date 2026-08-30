@@ -293,6 +293,7 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
                 {item.finding_index for item in evidence.results
                  if item.status == "confirmed" and item.cleanup_verified})
     confirmed: list[ReproducedFinding] = []
+    confirmed_indexes: set[int] = set()
     for result in evidence.results:
         if result.status != "confirmed" or not result.cleanup_verified or result.finding_index not in accepted:
             continue
@@ -304,8 +305,12 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
                                            result.condition, result.oracle, result.expected,
                                            result.observed, True, result.population_label,
                                            result.matching_count, result.total_count))
-    if confirmed:
-        return replace(review, findings=(), reproduced_findings=tuple(confirmed))
+        confirmed_indexes.add(result.finding_index)
+    refuted_indexes = {item.finding_index for item in evidence.results if item.status == "refuted"}
+    static_findings = tuple(finding for index, finding in enumerate(review.findings)
+                            if index not in confirmed_indexes and index not in refuted_indexes)
+    if confirmed or static_findings:
+        return replace(review, findings=static_findings, reproduced_findings=tuple(confirmed))
     return replace(review, findings=(), reproduced_findings=(), risk="low",
                    risk_confidence="high", risk_evidence=())
 

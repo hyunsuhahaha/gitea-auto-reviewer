@@ -531,6 +531,9 @@ def validate_verification(draft: Review, verified: Review) -> None:
 def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str) -> str:
     title = " ".join(pr_title.split())[:120]
     heading = f"PR #{pr_number} {title}"
+    reproduced_keys = {(item.problem, item.impact, item.evidence) for item in review.reproduced_findings}
+    static_findings = tuple(item for item in review.findings
+                            if (item.problem, item.impact, item.evidence) not in reproduced_keys)
     width = max(28, _display_width(heading) + 2)
     top = f"┌{'─' * width}┐"
     middle = f"├{'─' * width}┤"
@@ -575,6 +578,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         "",
         *(_reproduced_finding_section(review.reproduced_findings)
           if review.reproduced_findings else ["", "재현된 문제", "• 자동 재현 및 2차 검증을 통과"]),
+        *(_finding_section(static_findings) if static_findings else []),
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
@@ -586,7 +590,8 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
 
 
 def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
-    lines = ["주의"]
+    lines = ["정적 분석 발견 사항(미재현)",
+             "※ GitNexus 의존성 그래프와 저장소 코드에 근거하며 DB 재현으로 확정되지 않음"]
     for finding in findings:
         lines.append(f"• {finding.problem}")
         lines.append(f"  영향: {finding.impact}")

@@ -163,7 +163,7 @@ def test_invalid_population_is_ignored_without_changing_reproduction_status() ->
     )
 
 
-def test_finalize_suppresses_refuted_or_unverified_findings() -> None:
+def test_finalize_suppresses_refuted_findings() -> None:
     review = Review.from_json(json.dumps(impact_payload()))
     evidence = ReproductionEvidence(SHA, (
         ReproductionResult(0, "refuted", "조건", "정상", "정상", "정상", True, 0.1),
@@ -171,6 +171,31 @@ def test_finalize_suppresses_refuted_or_unverified_findings() -> None:
     final = finalize_review(review, evidence)
     assert final.risk == "low"
     assert final.findings == final.reproduced_findings == ()
+
+
+def test_finalize_retains_unplanned_or_inconclusive_findings_as_static_analysis() -> None:
+    review = Review.from_json(json.dumps(impact_payload()))
+
+    unplanned = finalize_review(review, ReproductionEvidence(SHA, ()))
+    inconclusive = finalize_review(review, ReproductionEvidence(SHA, (
+        ReproductionResult(0, "inconclusive", "조건", "정상", "", "시간 초과", False, 180.0),
+    )))
+
+    assert unplanned.findings == review.findings
+    assert inconclusive.findings == review.findings
+    assert unplanned.risk == inconclusive.risk == review.risk
+
+
+def test_finalize_retains_second_pass_rejection_as_static_analysis() -> None:
+    review = Review.from_json(json.dumps(impact_payload()))
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(0, "confirmed", "조건", "정상", "정상", "오류", True, 0.1),
+    ))
+
+    final = finalize_review(review, evidence, VerificationDecision(SHA, ()))
+
+    assert final.findings == review.findings
+    assert final.reproduced_findings == ()
 
 
 def test_second_pass_can_only_accept_confirmed_reproductions() -> None:
