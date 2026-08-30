@@ -79,6 +79,36 @@ PR head ── 기존 Windows 테스트 러너
                   같은 SHA의 재현 결과 보존
 ```
 
+### 최초 FINDING: Codex + GitNexus 정적 분석
+
+최초 FINDING 단계는 재현 단계가 아니라 읽기 전용 정적 분석입니다. Codex는 다음
+입력을 함께 사용해 PR이 새로 만들거나 악화한 문제 후보를 찾습니다.
+
+- `base...head` 전체 diff와 PR head의 전체 저장소
+- GitNexus가 인덱싱한 심볼, 호출자, 피호출자 및 관련 프로세스 그래프
+- head SHA에 연결된 Django, 마이그레이션 및 pytest 결과
+- base 커밋의 신뢰된 `AI_REVIEW.md` 정책
+
+프로그램은 Codex CLI를 JSONL 이벤트 모드로 실행하고, 초안 생성을 완료하기 전에
+GitNexus의 다음 도구가 실제로 성공했는지 검사합니다.
+
+- `detect_changes`: 전체 변경 심볼 탐지
+- `context`: 변경 심볼의 정의와 관계 확인
+- `impact`: 직접·간접 영향 경로 확인
+
+세 호출 중 하나라도 완료되지 않으면 리뷰를 실패시키며 조용히 빈 FINDING으로
+처리하지 않습니다. 실행 경로가 불명확할 때 사용하는 `trace`는 선택 항목입니다.
+
+Codex는 변경 전후 조건과 경계값을 비교하고, 새로 허용된 상태가 데이터 생성·수정·
+삭제·분할·계산 및 MES/SCM/ERP 경로로 전달되는지 추적합니다. FINDING은 `bug`,
+`security`, `performance`, `dependency`, `policy` 범주로 최대 5개까지 생성할 수
+있습니다. 모든 FINDING은 구체적인 운영 영향과 실제 `file:line` 근거가 필요하며,
+프로그램은 해당 파일과 줄 및 정책 인용이 실제로 존재하는지 검증합니다.
+
+이 단계에서는 프로젝트 코드나 테스트를 실행하지 않습니다. 생성된 후보는 이후
+`plan → reproduce → verify → finalize` 단계에서 DB 재현 가능 여부에 따라 `재현된
+문제` 또는 `정적 분석 발견 사항(미재현)`으로 분류됩니다.
+
 CLI 단계는 하나의 Windows 작업에서 순차적으로 실행됩니다.
 
 ```bash
@@ -126,7 +156,7 @@ PR 코드는 증거 수집 프로세스에서만 실행됩니다. Codex에는 �
 
 - Python 3.11 이상
 - Git
-- `--output-schema`를 지원하는 Codex CLI
+- `--output-schema`와 `exec --json`을 지원하는 Codex CLI
 - GitNexus CLI
 - `ai-review-windows` 라벨이 지정된 전용 Windows Gitea 러너
 - Codex를 사용할 수 있는 ChatGPT 계정

@@ -7,6 +7,12 @@ import pytest
 from gitea_auto_reviewer.codex import run_codex_review
 
 
+GITNEXUS_EVENTS = "\n".join(json.dumps({
+    "type": "item.completed",
+    "item": {"type": "mcp_tool_call", "server": "gitnexus", "tool": tool, "status": "completed"},
+}) for tool in ("detect_changes", "context", "impact"))
+
+
 def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: Path) -> None:
     captured = {}
 
@@ -40,7 +46,7 @@ def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: P
             ),
             encoding="utf-8",
         )
-        return CompletedProcess(command, 0, "", "")
+        return CompletedProcess(command, 0, GITNEXUS_EVENTS, "")
 
     monkeypatch.setattr("gitea_auto_reviewer.codex.subprocess.run", fake_run)
     monkeypatch.setenv("GITEA_TOKEN", "must-not-leak")
@@ -57,6 +63,7 @@ def test_codex_runs_read_only_without_gitea_credentials(monkeypatch, tmp_path: P
     assert captured["command"][captured["command"].index("--cd") + 1] == str(repository)
     assert "--skip-git-repo-check" not in captured["command"]
     assert "--ephemeral" in captured["command"]
+    assert "--json" in captured["command"]
     assert any("mcp_servers.gitnexus.command" in part for part in captured["command"])
     assert any("GITNEXUS_MCP_DEFAULT_REPO" in part for part in captured["command"])
     assert "GITEA_TOKEN" not in captured["env"]
@@ -98,7 +105,7 @@ def test_codex_applies_deterministic_fields_before_validation(monkeypatch, tmp_p
             "affected_files": [],
         }
         output.write_text(json.dumps(payload), encoding="utf-8")
-        return CompletedProcess(command, 0, "", "")
+        return CompletedProcess(command, 0, GITNEXUS_EVENTS, "")
 
     monkeypatch.setattr("gitea_auto_reviewer.codex.subprocess.run", fake_run)
 
@@ -146,7 +153,7 @@ def test_codex_uses_requested_reasoning_effort(monkeypatch, tmp_path: Path) -> N
             "findings": [],
             "affected_files": [],
         }), encoding="utf-8")
-        return CompletedProcess(command, 0, "", "")
+        return CompletedProcess(command, 0, GITNEXUS_EVENTS, "")
 
     monkeypatch.setattr("gitea_auto_reviewer.codex.subprocess.run", fake_run)
 
@@ -158,3 +165,20 @@ def test_codex_uses_requested_reasoning_effort(monkeypatch, tmp_path: Path) -> N
 def test_codex_rejects_unknown_reasoning_effort(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="reasoning_effort"):
         run_codex_review("prompt", tmp_path, temp_root=tmp_path, reasoning_effort="none")
+
+
+def test_codex_requires_completed_gitnexus_analysis(monkeypatch, tmp_path: Path) -> None:
+    def fake_run(command, **kwargs):
+        output = Path(command[command.index("--output-last-message") + 1])
+        output.write_text("{}", encoding="utf-8")
+        event = json.dumps({
+            "type": "item.completed",
+            "item": {"type": "mcp_tool_call", "server": "gitnexus",
+                     "tool": "detect_changes", "status": "completed"},
+        })
+        return CompletedProcess(command, 0, event, "")
+
+    monkeypatch.setattr("gitea_auto_reviewer.codex.subprocess.run", fake_run)
+
+    with pytest.raises(RuntimeError, match="context, impact"):
+        run_codex_review("prompt", tmp_path, temp_root=tmp_path)

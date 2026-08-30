@@ -34,6 +34,7 @@ SAFE_ENVIRONMENT_NAMES = {
     "USERPROFILE",
     "WINDIR",
 }
+REQUIRED_REVIEW_GITNEXUS_TOOLS = ("detect_changes", "context", "impact")
 
 
 def safe_codex_environment() -> dict[str, str]:
@@ -68,6 +69,7 @@ def run_codex_review(
     raw = run_codex_json(
         prompt, REVIEW_JSON_SCHEMA, repository, codex_binary, temp_root,
         fixed_fields, reasoning_effort, gitnexus_binary,
+        required_gitnexus_tools=REQUIRED_REVIEW_GITNEXUS_TOOLS,
     )
     return Review.from_json(raw)
 
@@ -81,6 +83,7 @@ def run_codex_json(
     fixed_fields: dict[str, Any] | None = None,
     reasoning_effort: str = "medium",
     gitnexus_binary: str = "gitnexus",
+    required_gitnexus_tools: tuple[str, ...] = (),
 ) -> str:
     """Run one read-only Codex turn and return validated-shape JSON text."""
     if reasoning_effort not in {"low", "medium", "high"}:
@@ -104,6 +107,7 @@ def run_codex_json(
             "--ignore-rules",
             "--color",
             "never",
+            "--json",
             "--cd",
             str(repository),
             "--output-schema",
@@ -128,6 +132,12 @@ def run_codex_json(
             detail = " ".join(result.stderr.split())[-2000:]
             suffix = f": {detail}" if detail else ""
             raise RuntimeError(f"Codex analysis failed with exit code {result.returncode}{suffix}")
+        completed_tools = _completed_mcp_tools(result.stdout, "gitnexus")
+        missing_tools = [tool for tool in required_gitnexus_tools if tool not in completed_tools]
+        if missing_tools:
+            raise RuntimeError(
+                f"Codex review did not complete required GitNexus tools: {', '.join(missing_tools)}"
+            )
         try:
             raw = output_path.read_text(encoding="utf-8")
         except FileNotFoundError as exc:
@@ -137,3 +147,23 @@ def run_codex_json(
             value.update(fixed_fields)
             raw = json.dumps(value)
         return raw
+
+
+def _completed_mcp_tools(events: str, server: str) -> set[str]:
+    completed: set[str] = set()
+    for line in events.splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item") if isinstance(event, dict) and event.get("type") == "item.completed" else None
+        if not isinstance(item, dict) or item.get("type") != "mcp_tool_call":
+            continue
+        if (item.get("server") or item.get("server_name")) != server:
+            continue
+        if item.get("status") not in {None, "completed"} or item.get("error"):
+            continue
+        tool = item.get("tool") or item.get("tool_name")
+        if isinstance(tool, str):
+            completed.add(tool)
+    return completed
