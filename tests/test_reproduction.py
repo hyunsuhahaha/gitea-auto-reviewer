@@ -16,6 +16,7 @@ from gitea_auto_reviewer.reproduction import (
     build_plan_prompt,
     finalize_review,
     plan_reproductions,
+    retry_inconclusive_reproductions,
     _complete_evidence,
     validate_script,
 )
@@ -48,6 +49,8 @@ def test_reproduction_plan_requires_korean_user_visible_text() -> None:
     assert "1-6 concise, unnumbered lines" in prompt
     assert "Do not present arbitrary fixture values" in prompt
     assert "only in `observed`" in prompt
+    assert "timezone.now()" in prompt
+    assert "naive datetime" in prompt
 
 
 def test_reproduction_requires_one_result_per_planned_case() -> None:
@@ -153,6 +156,101 @@ def test_reproduction_script_allows_in_memory_string_replacement() -> None:
     )
 
 
+def test_inconclusive_reproduction_is_repaired_and_retried(monkeypatch, tmp_path) -> None:
+    script = "def reproduce():\n    return {'confirmed': True}\n"
+    plan = ReproductionPlan(SHA, (ReproductionCase(0, "조건", "기준", script),))
+    initial = ReproductionEvidence(SHA, (
+        ReproductionResult(0, "inconclusive", "조건", "기준", "", "naive datetime", False, 0.1),
+    ))
+    captured = {}
+
+    def fake_codex(prompt, *args, **kwargs):
+        captured["prompt"] = prompt
+        return json.dumps({"version": 1, "head_sha": SHA, "cases": [{
+            "finding_index": 0, "condition": "약화된 조건", "oracle": "약화된 기준", "script": script,
+        }]})
+
+    def fake_reproduce(repaired, *args, **kwargs):
+        captured["repaired"] = repaired
+        return ReproductionEvidence(SHA, (
+            ReproductionResult(0, "confirmed", "조건", "기준", "정상", "오류", True, 0.2),
+        ))
+
+    monkeypatch.setattr("gitea_auto_reviewer.reproduction.run_codex_json", fake_codex)
+    monkeypatch.setattr("gitea_auto_reviewer.reproduction.run_reproductions", fake_reproduce)
+
+    result = retry_inconclusive_reproductions(
+        plan, initial, tmp_path, "python", 180, (), "codex", "gitnexus",
+    )
+
+    assert result.results[0].status == "confirmed"
+    assert "naive datetime" in captured["prompt"]
+    assert "only retry" in captured["prompt"]
+    assert captured["repaired"].cases[0].condition == "조건"
+    assert captured["repaired"].cases[0].oracle == "기준"
+
+
+def test_failed_repair_keeps_an_actionable_reason(monkeypatch, tmp_path) -> None:
+    plan = ReproductionPlan(SHA, (
+        ReproductionCase(0, "조건", "기준", "def reproduce():\n    pass\n"),
+    ))
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(0, "inconclusive", "조건", "기준", "", "첫 실패", False, 0.1),
+    ))
+    monkeypatch.setattr(
+        "gitea_auto_reviewer.reproduction.run_codex_json",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("repair unavailable")),
+    )
+
+    result = retry_inconclusive_reproductions(
+        plan, evidence, tmp_path, "python", 180, (), "codex", "gitnexus",
+    )
+
+    assert result.results[0].status == "inconclusive"
+    assert result.results[0].observed == "첫 실패; 자동 수정 실패: RuntimeError: repair unavailable"
+
+
+def test_second_inconclusive_result_is_marked_as_retried(monkeypatch, tmp_path) -> None:
+    script = "def reproduce():\n    return {}\n"
+    plan = ReproductionPlan(SHA, (ReproductionCase(0, "조건", "기준", script),))
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(0, "inconclusive", "조건", "기준", "", "첫 실패", False, 0.1),
+    ))
+    monkeypatch.setattr(
+        "gitea_auto_reviewer.reproduction.run_codex_json",
+        lambda *args, **kwargs: json.dumps({"version": 1, "head_sha": SHA, "cases": [{
+            "finding_index": 0, "condition": "조건", "oracle": "기준", "script": script,
+        }]}),
+    )
+    monkeypatch.setattr(
+        "gitea_auto_reviewer.reproduction.run_reproductions",
+        lambda *args, **kwargs: ReproductionEvidence(SHA, (
+            ReproductionResult(0, "inconclusive", "조건", "기준", "", "두 번째 실패", False, 0.2),
+        )),
+    )
+
+    result = retry_inconclusive_reproductions(
+        plan, evidence, tmp_path, "python", 180, (), "codex", "gitnexus",
+    )
+
+    assert result.results[0].observed == "자동 수정 1회 후에도 실패: 두 번째 실패"
+
+
+def test_retry_is_skipped_when_every_case_has_a_verdict(monkeypatch, tmp_path) -> None:
+    plan = ReproductionPlan(SHA, ())
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(0, "refuted", "조건", "기준", "정상", "정상", True, 0.1),
+    ))
+    monkeypatch.setattr(
+        "gitea_auto_reviewer.reproduction.run_codex_json",
+        lambda *args, **kwargs: pytest.fail("Codex repair must not run"),
+    )
+
+    assert retry_inconclusive_reproductions(
+        plan, evidence, tmp_path, "python", 180, (), "codex", "gitnexus",
+    ) is evidence
+
+
 def test_finalize_keeps_only_confirmed_cleanup_verified_findings() -> None:
     review = Review.from_json(json.dumps(impact_payload()))
     evidence = ReproductionEvidence(SHA, (
@@ -175,14 +273,15 @@ def test_invalid_population_is_ignored_without_changing_reproduction_status() ->
     )
 
 
-def test_finalize_suppresses_refuted_findings() -> None:
+def test_finalize_retains_a_single_failed_reproduction_as_static_analysis() -> None:
     review = Review.from_json(json.dumps(impact_payload()))
     evidence = ReproductionEvidence(SHA, (
         ReproductionResult(0, "refuted", "조건", "정상", "정상", "정상", True, 0.1),
     ))
     final = finalize_review(review, evidence)
-    assert final.risk == "low"
-    assert final.findings == final.reproduced_findings == ()
+    assert final.findings[0].reproduction_status == "not_reproduced"
+    assert final.reproduced_findings == ()
+    assert "재현 상태: 실행상 미재현 — 정상" in render_markdown(final, 1, SHA, "테스트")
 
 
 def test_finalize_retains_unplanned_or_inconclusive_findings_as_static_analysis() -> None:

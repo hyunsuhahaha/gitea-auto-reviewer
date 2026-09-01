@@ -13,8 +13,8 @@
 피호출자 및 관련 프로세스를 추적합니다. 이어서 가능한 발견 사항을 강제 롤백
 트랜잭션 안의 실제 테스트 데이터베이스에서 다시 실행합니다. 재현·검증에 성공한
 항목은 `재현된 문제`, DB 재현 대상이 아니거나 결과가 불확실한 항목은
-`정적 분석 발견 사항(미재현)`으로 구분해 PR 댓글에 게시하며, 실행으로 반증된
-항목만 제외합니다.
+`정적 분석 발견 사항(미재현)`으로 구분해 PR 댓글에 게시합니다. 단일 생성 fixture에서
+관찰되지 않았다는 이유만으로 정적 finding을 삭제하지 않습니다.
 
 기존 Codex 구독을 셀프 호스팅 Gitea의 풀 리퀘스트 댓글과 연결해 다음 내용을
 검증합니다.
@@ -61,14 +61,14 @@ PR head ── 기존 Windows 테스트 러너
                테스트 DB + transaction.atomic()
                강제 롤백 + 정리 상태 검사
                선택적 자연 데이터 조건 집계
+               불확실하면 스크립트 자동수정 후 1회 재실행
                           │
                 Codex 반증 단계(low)
                 재현 증거 읽기
                           │
                  검증 결과에 따라 분류
                  ├─ 재현·검증 성공: 재현된 문제
-                 ├─ 미실행/불확실: 정적 분석 발견 사항(미재현)
-                 └─ 실행으로 반증: 제외
+                 └─ 미실행/불확실/미재현: 사유를 붙인 정적 분석 발견 사항
                      review.json
                           │
                      댓글 프로세스
@@ -116,7 +116,7 @@ gitea-auto-reviewer index ...     # PR head 코드 그래프 생성/업데이트
 gitea-auto-reviewer evidence ...  # 신뢰된 내부 PR 실행 및 증거 수집
 gitea-auto-reviewer review ...    # Codex 리뷰, Gitea 자격 증명 없음
 gitea-auto-reviewer plan ...      # 재현 가능한 발견 사항의 재현 계획 수립
-gitea-auto-reviewer reproduce ... # CI Python으로 실행 후 DB 강제 롤백
+gitea-auto-reviewer reproduce ... # DB 롤백 실행, 불확실한 스크립트 자동수정·1회 재실행
 gitea-auto-reviewer verify ...    # Codex가 재현 결과 반증 시도
 gitea-auto-reviewer finalize ...  # 확인되고 정리 검증을 통과한 결과만 유지
 gitea-auto-reviewer comment ...   # Gitea 댓글 작성, Codex나 PR 코드 실행 안 함
@@ -315,8 +315,12 @@ gitea-auto-reviewer finalize `
 `transaction.atomic()`을 열어 강제로 롤백합니다. DB 연결을 닫고 새 연결에서 행과
 필드를 다시 검사합니다. 정리 검증을 통과한 `confirmed` 결과만 `재현된 문제`에
 표시됩니다. 재현 계획 제외, 시간 초과·예외, 정리 미검증 및 2차 검증 미채택 사례는
-각 사유와 함께 정적 분석 항목에 남고, 실행으로 반증된 사례만 제외됩니다. PostgreSQL
+각 사유와 함께 정적 분석 항목에 남습니다. 생성된 단일 fixture에서 문제가 관찰되지
+않았다는 이유만으로 finding을 삭제하지 않습니다. PostgreSQL
 시퀀스는 트랜잭션 대상이 아니므로 값에 빈 구간이 생길 수 있습니다.
+
+fixture, timezone 또는 설정 오류로 판정 전에 종료된 재현 스크립트는 오류 증거를 Codex에
+돌려보내 한 번 자동 수정·재실행합니다. 두 번째 실행도 실패하면 그 사유를 그대로 표시합니다.
 
 재현 사례 수에는 제한이 없습니다. 가능한 경우 실제 ORM 모집단을 집계해
 `버그 조건 충족률: 포장 투입 버킷 467/2,481건 (18.82%)`과 같은 비율도 표시합니다.

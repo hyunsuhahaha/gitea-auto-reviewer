@@ -17,7 +17,7 @@ from .review import (Review, TestResult, preserve_reproduced_findings, render_ma
                      validate_grounding)
 from .reproduction import (ReproductionEvidence, ReproductionPlan, VerificationDecision,
                            finalize_review, plan_reproductions, run_reproductions,
-                           verify_reproductions)
+                           retry_inconclusive_reproductions, verify_reproductions)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -84,6 +84,12 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce.add_argument("--python", required=True)
     reproduce.add_argument("--timeout", type=int, default=180)
     reproduce.add_argument("--require-setting", action="append", default=[])
+    reproduce.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
+    reproduce.add_argument("--gitnexus-binary", default=os.getenv(
+        "GITNEXUS_BINARY", os.getenv("GITNEXUS_EXE", "gitnexus")
+    ))
+    reproduce.add_argument("--repair-reasoning-effort", choices=["low", "medium", "high"],
+                           default=_reasoning_effort("AI_REVIEW_REPAIR_EFFORT", "medium"))
 
     verify = subparsers.add_parser("verify", help="adversarially verify reproduced findings")
     verify.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -280,6 +286,11 @@ def reproduce_command(arguments: argparse.Namespace) -> None:
         raise ValueError("reproduction plan belongs to a different PR head SHA")
     evidence = run_reproductions(plan, arguments.repo_dir.resolve(), arguments.python,
                                  arguments.timeout, tuple(arguments.require_setting))
+    evidence = retry_inconclusive_reproductions(
+        plan, evidence, arguments.repo_dir.resolve(), arguments.python, arguments.timeout,
+        tuple(arguments.require_setting), arguments.codex_binary, arguments.gitnexus_binary,
+        arguments.repair_reasoning_effort,
+    )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Reproduction evidence written to {arguments.output}")
 

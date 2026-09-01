@@ -205,7 +205,7 @@ class Finding:
         elif quote is not None:
             raise ValueError("policy_quote is only allowed for policy findings")
         status = value.get("reproduction_status")
-        if status not in {None, "unplanned", "inconclusive", "verification_rejected"}:
+        if status not in {None, "unplanned", "inconclusive", "not_reproduced", "verification_rejected"}:
             raise ValueError("invalid finding reproduction status")
         detail = value.get("reproduction_detail")
         if detail is not None:
@@ -612,6 +612,7 @@ def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
             label = {
                 "unplanned": "미실행",
                 "inconclusive": "실행 불확정",
+                "not_reproduced": "실행상 미재현",
                 "verification_rejected": "2차 검증 미채택",
             }[finding.reproduction_status]
             lines.append(f"    재현 상태: {label} — {finding.reproduction_detail}")

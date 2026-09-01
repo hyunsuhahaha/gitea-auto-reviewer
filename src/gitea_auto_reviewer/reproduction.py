@@ -168,6 +168,7 @@ Each script must contain only imports plus exactly `def reproduce():`, and retur
   population_label, matching_count, total_count: prevalence data counted from untouched test-DB rows before any reproduction mutation. Return all three whenever ORM can define a defensible natural population and matching condition; omit all three only when it cannot. Never invent counts. These values are informational and never decide whether a finding is confirmed.
 
 The fixed runner supplies django.setup(), transaction.atomic(), forced rollback, a fresh-connection cleanup check, and exception handling. Do not manage transactions. Select existing records semantically through ORM; never hard-code database primary keys. Do not write files, spawn processes, use network clients, call ERP, or mutate anything outside the rollback transaction. RequestFactory/SimpleNamespace and direct Django view calls are allowed.
+Use timezone-aware datetimes compatible with the repository settings. Prefer django.utils.timezone.now(); never pass a naive datetime to timezone.localtime() or timezone-aware model logic. The script must reach the candidate's changed business logic rather than failing during fixture construction.
 
 Candidate review JSON:
 {review.to_json()}
@@ -204,6 +205,68 @@ Reproduction evidence:
                          fixed_fields={"version": 1, "head_sha": evidence.head_sha},
                          reasoning_effort=reasoning_effort, gitnexus_binary=gitnexus_binary)
     return VerificationDecision.from_json(raw, evidence)
+
+
+def retry_inconclusive_reproductions(
+    plan: ReproductionPlan,
+    evidence: ReproductionEvidence,
+    repository: Path,
+    python: str,
+    timeout: int,
+    required_settings: tuple[str, ...],
+    codex_binary: str,
+    gitnexus_binary: str,
+    reasoning_effort: str = "medium",
+) -> ReproductionEvidence:
+    failed_indexes = {item.finding_index for item in evidence.results if item.status == "inconclusive"}
+    if not failed_indexes:
+        return evidence
+    failed_cases = tuple(case for case in plan.cases if case.finding_index in failed_indexes)
+    failed_results = tuple(item for item in evidence.results if item.finding_index in failed_indexes)
+    prompt = f"""You are repairing rollback-only Django reproduction scripts that failed before a verdict.
+Inspect the repository and return one corrected case for every supplied failed case. Preserve each finding_index. Fix the concrete exception without weakening the oracle or bypassing the changed business logic. Use django.utils.timezone.now() or another timezone-aware value whenever Django timezone handling is involved; never feed a naive datetime to timezone.localtime(). Keep all original safety restrictions: imports plus exactly reproduce(), no files, processes, network, external systems, commits, or transaction management. This is the only retry, so ensure fixture construction reaches the target code path.
+Each reproduce() must return confirmed, expected, observed, and a non-empty cleanup_checks list using the original runner contract. A false verdict is valid only after the target business logic ran with every stated precondition satisfied.
+
+Failed cases:
+{ReproductionPlan(plan.head_sha, failed_cases).to_json()}
+
+Failure evidence:
+{ReproductionEvidence(evidence.head_sha, failed_results).to_json()}
+"""
+    try:
+        raw = run_codex_json(
+            prompt, PLAN_SCHEMA, repository, codex_binary,
+            fixed_fields={"version": 1, "head_sha": plan.head_sha},
+            reasoning_effort=reasoning_effort, gitnexus_binary=gitnexus_binary,
+        )
+        repaired = ReproductionPlan.from_json(raw, 5)
+    except (RuntimeError, ValueError) as exc:
+        return ReproductionEvidence(evidence.head_sha, tuple(
+            replace(item, observed=(
+                f"{item.observed}; 자동 수정 실패: {type(exc).__name__}: {exc}"
+            )[:1000]) if item.finding_index in failed_indexes else item
+            for item in evidence.results
+        ))
+    originals = {case.finding_index: case for case in failed_cases}
+    repaired = ReproductionPlan(plan.head_sha, tuple(
+        ReproductionCase(case.finding_index, originals[case.finding_index].condition,
+                         originals[case.finding_index].oracle, case.script)
+        for case in repaired.cases if case.finding_index in failed_indexes
+    ))
+    if not repaired.cases:
+        return ReproductionEvidence(evidence.head_sha, tuple(
+            replace(item, observed=f"{item.observed}; 자동 수정 계획 없음"[:1000])
+            if item.finding_index in failed_indexes else item for item in evidence.results
+        ))
+    retried = run_reproductions(repaired, repository, python, timeout, required_settings)
+    replacements = {
+        item.finding_index: replace(item, observed=f"자동 수정 1회 후에도 실패: {item.observed}"[:1000])
+        if item.status == "inconclusive" else item
+        for item in retried.results
+    }
+    return ReproductionEvidence(evidence.head_sha, tuple(
+        replacements.get(item.finding_index, item) for item in evidence.results
+    ))
 
 
 FORBIDDEN_IMPORTS = {"subprocess", "socket", "requests", "httpx", "urllib", "ftplib", "pathlib", "shutil", "os"}
@@ -318,17 +381,18 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
                                            result.observed, True, result.population_label,
                                            result.matching_count, result.total_count))
         confirmed_indexes.add(result.finding_index)
-    refuted_indexes = {item.finding_index for item in evidence.results if item.status == "refuted"}
     results = {item.finding_index: item for item in evidence.results}
     static_findings = []
     for index, finding in enumerate(review.findings):
-        if index in confirmed_indexes or index in refuted_indexes:
+        if index in confirmed_indexes:
             continue
         result = results.get(index)
         if result is None:
             status, detail = "unplanned", "현재 Django/ORM 롤백 재현 범위에서 계획되지 않음"
         elif result.status == "confirmed":
             status, detail = "verification_rejected", "재현 결과가 문제와 영향을 입증하기에 불충분함"
+        elif result.status == "refuted":
+            status, detail = "not_reproduced", result.observed or "조건 실행에서 문제를 관찰하지 못함"
         else:
             status, detail = "inconclusive", result.observed or "실행 결과를 판정하지 못함"
         static_findings.append(replace(finding, reproduction_status=status,
