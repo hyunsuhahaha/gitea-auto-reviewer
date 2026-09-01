@@ -320,7 +320,7 @@ def test_renderer_states_when_no_reproduced_problem_survives() -> None:
 
     rendered = render_markdown(review, 1, "a" * 40, "테스트")
 
-    assert "재현된 문제\n• 자동 재현 및 2차 검증을 통과" in rendered
+    assert "재현된 문제\n  • 자동 재현 및 2차 검증을 통과" in rendered
 
 
 def test_renderer_separates_unreproduced_static_findings() -> None:
@@ -330,7 +330,8 @@ def test_renderer_separates_unreproduced_static_findings() -> None:
 
     assert "정적 분석 발견 사항(미재현)" in rendered
     assert "GitNexus 의존성 그래프와 저장소 코드에 근거" in rendered
-    assert "기존 Product 생성 경로가 remark를 전달하지 않음" in rendered
+    assert "  • 기존 Product 생성 경로가 remark를 전달하지 않음" in rendered
+    assert "    영향:" in rendered
 
 
 def test_renderer_lists_reproduction_conditions() -> None:
@@ -349,4 +350,4 @@ def test_renderer_lists_reproduction_conditions() -> None:
 
     rendered = render_markdown(Review.from_json(json.dumps(payload)), 1, "a" * 40, "테스트")
 
-    assert "재현에 사용한 조건\n  1. 단일 PO 작업지시\n  2. 양품 합계 0\n  3. ERP 일괄전송 실행" in rendered
+    assert "재현에 사용한 조건\n      1. 단일 PO 작업지시\n      2. 양품 합계 0\n      3. ERP 일괄전송 실행" in rendered

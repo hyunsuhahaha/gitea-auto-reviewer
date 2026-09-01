@@ -577,7 +577,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         *[f"• {item}" for item in review.key_changes],
         "",
         *(_reproduced_finding_section(review.reproduced_findings)
-          if review.reproduced_findings else ["", "재현된 문제", "• 자동 재현 및 2차 검증을 통과"]),
+          if review.reproduced_findings else ["", "재현된 문제", "  • 자동 재현 및 2차 검증을 통과"]),
         *(_finding_section(static_findings) if static_findings else []),
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
@@ -593,33 +593,37 @@ def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
     lines = ["정적 분석 발견 사항(미재현)",
              "※ GitNexus 의존성 그래프와 저장소 코드에 근거하며 DB 재현으로 확정되지 않음"]
     for finding in findings:
-        lines.append(f"• {finding.problem}")
-        lines.append(f"  영향: {finding.impact}")
+        if len(lines) > 2:
+            lines.append("")
+        lines.append(f"  • {finding.problem}")
+        lines.append(f"    영향: {finding.impact}")
         if finding.policy_quote:
-            lines.append(f'  규칙: "{finding.policy_quote}"')
-        lines.extend(f"  └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
+            lines.append(f'    규칙: "{finding.policy_quote}"')
+        lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
     return ["", *lines]
 
 
 def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...]) -> list[str]:
     lines = ["재현된 문제"]
     for finding in findings:
-        lines.append(f"• {finding.problem}")
-        lines.append(f"  영향: {finding.impact}")
-        lines.append("  재현에 사용한 조건")
-        lines.extend(f"  {index}. {condition}" for index, condition in enumerate(
+        if len(lines) > 1:
+            lines.append("")
+        lines.append(f"  • {finding.problem}")
+        lines.append(f"    영향: {finding.impact}")
+        lines.append("    재현에 사용한 조건")
+        lines.extend(f"      {index}. {condition}" for index, condition in enumerate(
             (line.strip() for line in finding.condition.splitlines() if line.strip()), start=1
         ))
         if (finding.population_label is not None and finding.matching_count is not None
                 and finding.total_count is not None):
             rate = finding.matching_count / finding.total_count * 100
             lines.append(
-                f"  버그 조건 충족률: {finding.population_label} "
+                f"    버그 조건 충족률: {finding.population_label} "
                 f"{finding.matching_count:,}/{finding.total_count:,}건 ({rate:.2f}%)"
             )
-        lines.append(f"  관찰 결과: {finding.observed}")
-        lines.append("  롤백 검증: 통과")
-        lines.extend(f"  └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
+        lines.append(f"    관찰 결과: {finding.observed}")
+        lines.append("    롤백 검증: 통과")
+        lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
     return ["", *lines]
 
 
