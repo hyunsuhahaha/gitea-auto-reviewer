@@ -47,7 +47,8 @@ def test_reproduce_command_retries_inconclusive_evidence(monkeypatch, tmp_path) 
         ReproductionResult(0, "inconclusive", "조건", "기준", "", "fixture 오류", False, 0.1),
     ))
     retried = ReproductionEvidence(sha, (
-        ReproductionResult(0, "confirmed", "조건", "기준", "정상", "오류", True, 0.2),
+        ReproductionResult(0, "confirmed", "조건", "기준", "정상", "오류", True, 0.2,
+                           target_reached=True, reached_targets=("product/models.py:1",)),
     ))
     monkeypatch.setattr("gitea_auto_reviewer.cli.run_reproductions", lambda *args: initial)
     monkeypatch.setattr(

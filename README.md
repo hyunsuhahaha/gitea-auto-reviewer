@@ -59,6 +59,8 @@ PR head ── 기존 Windows 테스트 러너
                           │
                Django view/ORM 직접 호출
                테스트 DB + transaction.atomic()
+               변경 근거 Python 라인 실행 추적
+               expected/observed 고정 판정
                강제 롤백 + 정리 상태 검사
                선택적 자연 데이터 조건 집계
                불확실하면 스크립트 자동수정 후 1회 재실행
@@ -311,10 +313,16 @@ gitea-auto-reviewer finalize `
   --output C:\runner\temp\review.json
 ```
 
-고정 실행기는 Django를 초기화하고 필수 런타임 설정을 확인한 뒤 모든 Django DB에서
-`transaction.atomic()`을 열어 강제로 롤백합니다. DB 연결을 닫고 새 연결에서 행과
-필드를 다시 검사합니다. 정리 검증을 통과한 `confirmed` 결과만 `재현된 문제`에
-표시됩니다. 재현 계획 제외, 시간 초과·예외, 정리 미검증 및 2차 검증 미채택 사례는
+Codex는 재현 조건, 실행 코드, 정확히 비교 가능한 `expected`와 `observed`만 제안하며
+`confirmed` 여부를 결정하지 않습니다. 고정 실행기는 Django를 초기화하고 필수 런타임
+설정을 확인한 뒤 모든 Django DB에서 `transaction.atomic()`을 열고, finding의 Python
+근거 라인 주변이 실제 실행됐는지 추적합니다. 실행 도달이 확인된 상태에서
+`expected != observed`이면 `confirmed`, 같으면 `refuted`로 판정합니다. 근거 코드에
+도달하지 못했거나 비교값이 없으면 판정하지 않고 `inconclusive`로 처리합니다.
+
+실행 후 DB를 강제로 롤백하고 연결을 닫은 다음 새 연결에서 행과 필드를 다시 검사합니다.
+변경 근거 도달, 불일치 관찰 및 정리 검증을 모두 통과한 결과만 `재현된 문제`에
+표시됩니다. 재현 계획 제외, 시간 초과·예외, 코드 미도달, 정리 미검증 및 2차 검증 미채택 사례는
 각 사유와 함께 정적 분석 항목에 남습니다. 생성된 단일 fixture에서 문제가 관찰되지
 않았다는 이유만으로 finding을 삭제하지 않습니다. PostgreSQL
 시퀀스는 트랜잭션 대상이 아니므로 값에 빈 구간이 생길 수 있습니다.

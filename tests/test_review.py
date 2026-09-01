@@ -110,6 +110,7 @@ def test_review_renders_compact_change_impact_summary() -> None:
         "problem": finding["problem"], "impact": finding["impact"], "evidence": finding["evidence"],
         "condition": "remark 없이 기존 생성 경로 호출", "oracle": "기존 생성 요청이 성공해야 함",
         "expected": "생성 성공", "observed": "필수 필드 오류 응답", "cleanup_verified": True,
+        "reached_targets": ["product/models.py:31"],
     }]
     review = Review.from_json(json.dumps(payload))
 
@@ -130,12 +131,13 @@ def test_review_renders_compact_change_impact_summary() -> None:
     assert "수정:" not in rendered
     assert "완료:" not in rendered
     assert "└ product/models.py:31" in rendered
+    assert "실행 도달: product/models.py:31" in rendered
     assert "유용했다면" not in rendered
     assert "노이즈였다면" not in rendered
     assert "Critical" not in rendered
     warning = rendered[rendered.index("재현된 문제"):rendered.index("영향 파일")]
     assert warning.count("└ product/models.py") == 1
-    assert "product/models.py:31" not in warning
+    assert warning.count("product/models.py:31") == 1
     assert "product/models.py:44" not in warning
     assert "└ product/services.py" in warning
     assert rendered.rfind("영향 파일") > rendered.rfind("재현된 문제")

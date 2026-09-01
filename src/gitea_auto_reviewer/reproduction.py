@@ -56,6 +56,7 @@ class ReproductionCase:
     condition: str
     oracle: str
     script: str
+    target_evidence: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -74,7 +75,8 @@ class ReproductionPlan:
         parsed: list[ReproductionCase] = []
         indexes: set[int] = set()
         for item in cases:
-            if not isinstance(item, dict) or set(item) != {"finding_index", "condition", "oracle", "script"}:
+            required = {"finding_index", "condition", "oracle", "script"}
+            if not isinstance(item, dict) or not required <= set(item) <= required | {"target_evidence"}:
                 raise ValueError("invalid reproduction case")
             index = item["finding_index"]
             if type(index) is not int or not 0 <= index < finding_count or index in indexes:
@@ -83,7 +85,18 @@ class ReproductionPlan:
             if not all(isinstance(text, str) and text.strip() for text in (condition, oracle, script)):
                 raise ValueError("reproduction case text must not be empty")
             validate_script(script)
-            parsed.append(ReproductionCase(index, condition.strip(), oracle.strip(), script))
+            targets = item.get("target_evidence", [])
+            if not isinstance(targets, list) or len(targets) > 5:
+                raise ValueError("invalid reproduction target evidence")
+            normalized_targets = []
+            for ref in targets:
+                path, separator, line = ref.rpartition(":") if isinstance(ref, str) else ("", "", "")
+                if not separator or not path.lower().endswith(".py") or not line.isdigit() or int(line) < 1:
+                    raise ValueError("invalid reproduction target evidence")
+                normalized_targets.append(f"{path.replace(chr(92), '/')}:{int(line)}")
+            parsed.append(ReproductionCase(
+                index, condition.strip(), oracle.strip(), script, tuple(normalized_targets)
+            ))
             indexes.add(index)
         return cls(validate_sha(value["head_sha"]), tuple(parsed))
 
@@ -104,6 +117,9 @@ class ReproductionResult:
     population_label: str | None = None
     matching_count: int | None = None
     total_count: int | None = None
+    target_reached: bool = False
+    reached_targets: tuple[str, ...] = ()
+    script: str = ""
 
 
 @dataclass(frozen=True)
@@ -116,9 +132,16 @@ class ReproductionEvidence:
         value = json.loads(raw)
         if not isinstance(value, dict) or set(value) != {"version", "head_sha", "results"} or value["version"] != 1:
             raise ValueError("invalid reproduction evidence")
-        results = tuple(ReproductionResult(**item) for item in value["results"])
+        results = tuple(ReproductionResult(
+            **{**item, "reached_targets": tuple(item.get("reached_targets", ()))},
+        ) for item in value["results"])
         if any(item.status not in {"confirmed", "refuted", "inconclusive"} for item in results):
             raise ValueError("invalid reproduction status")
+        if any(type(item.target_reached) is not bool or any(
+                not isinstance(ref, str) for ref in item.reached_targets) for item in results):
+            raise ValueError("invalid reproduction target evidence")
+        if any(not isinstance(item.script, str) or len(item.script) > 50000 for item in results):
+            raise ValueError("invalid reproduction script evidence")
         return cls(validate_sha(value["head_sha"]), results)
 
     def to_json(self) -> str:
@@ -137,7 +160,7 @@ class VerificationDecision:
             raise ValueError("invalid reproduction verification")
         indexes = value["accepted_finding_indices"]
         confirmed = {item.finding_index for item in evidence.results
-                     if item.status == "confirmed" and item.cleanup_verified}
+                     if item.status == "confirmed" and item.cleanup_verified and item.target_reached}
         if (not isinstance(indexes, list) or any(type(index) is not int for index in indexes)
                 or len(indexes) != len(set(indexes)) or not set(indexes) <= confirmed):
             raise ValueError("verification may accept only confirmed findings")
@@ -158,16 +181,15 @@ The repository is already checked out at PR head {head_sha}. Inspect it, includi
 Return one case for every finding that can be objectively reproduced by importing Django and directly calling ORM/service/view code against the configured test database. Skip subjective, destructive, external-network, browser-only, or schema-incompatible cases.
 `finding_index` is the zero-based position in the candidate review's `findings` array. Return at most one case for each finding and never invent an index outside that array.
 
-Write every user-visible explanation in Korean. In particular, `condition`, `oracle`, and the script's returned `expected` and `observed` strings must be Korean. Keep code identifiers and concrete values unchanged when needed. Write `condition` as 1-6 concise, unnumbered lines describing the minimal generalized data state and final action required for the bug; never combine them into a paragraph. Do not present arbitrary fixture values chosen by the reproduction script as required conditions. Omit exact quantities, IDs, dates, and ratios unless that exact value or boundary is causally required for the bug. Put chosen example values and calculations only in `observed`.
+Write user-visible explanations such as `condition` and `oracle` in Korean. Return `expected` and `observed` as exact JSON-compatible business values rather than explanatory prose; keep code identifiers and concrete values unchanged. Write `condition` as 1-6 concise, unnumbered lines describing the minimal generalized data state and final action required for the bug; never combine them into a paragraph. Do not present arbitrary fixture values chosen by the reproduction script as required conditions. Omit exact quantities, IDs, dates, and ratios unless that exact value or boundary is causally required for the bug. Put chosen example values and calculations only in `observed`.
 
 Each script must contain only imports plus exactly `def reproduce():`, and return a JSON-compatible dict:
-  confirmed: boolean (true only when the stated bad behavior was actually observed)
-  expected: short string
-  observed: short string containing concrete values or response text
+  expected: the exact JSON-compatible value required by the oracle
+  observed: the exact JSON-compatible value produced by the target code
   cleanup_checks: non-empty list of {{model, lookup, field, equals}} or {{model, lookup, exists}}
   population_label, matching_count, total_count: prevalence data counted from untouched test-DB rows before any reproduction mutation. Return all three whenever ORM can define a defensible natural population and matching condition; omit all three only when it cannot. Never invent counts. These values are informational and never decide whether a finding is confirmed.
 
-The fixed runner supplies django.setup(), transaction.atomic(), forced rollback, a fresh-connection cleanup check, and exception handling. Do not manage transactions. Select existing records semantically through ORM; never hard-code database primary keys. Do not write files, spawn processes, use network clients, call ERP, or mutate anything outside the rollback transaction. RequestFactory/SimpleNamespace and direct Django view calls are allowed.
+The fixed runner, not the script, decides confirmed/refuted by comparing expected and observed after proving that cited target code executed. Never return or calculate a confirmed verdict. The fixed runner supplies django.setup(), transaction.atomic(), forced rollback, a fresh-connection cleanup check, code-reach tracing, and exception handling. Do not manage transactions. Select existing records semantically through ORM; never hard-code database primary keys. Do not write files, spawn processes, use network clients, call ERP, or mutate anything outside the rollback transaction. RequestFactory/SimpleNamespace and direct Django view calls are allowed.
 Use timezone-aware datetimes compatible with the repository settings. Prefer django.utils.timezone.now(); never pass a naive datetime to timezone.localtime() or timezone-aware model logic. The script must reach the candidate's changed business logic rather than failing during fixture construction.
 
 Candidate review JSON:
@@ -182,18 +204,26 @@ def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_bi
     raw = run_codex_json(build_plan_prompt(review, head_sha), PLAN_SCHEMA, repository, codex_binary,
                          fixed_fields={"version": 1, "head_sha": head_sha}, reasoning_effort=reasoning_effort,
                          gitnexus_binary=gitnexus_binary)
-    return ReproductionPlan.from_json(raw, len(review.findings))
+    plan = ReproductionPlan.from_json(raw, len(review.findings))
+    cases = tuple(
+        replace(case, target_evidence=tuple(
+            ref for ref in review.findings[case.finding_index].evidence
+            if ref.rpartition(":")[0].lower().endswith(".py")
+        )) for case in plan.cases
+    )
+    return ReproductionPlan(plan.head_sha, tuple(case for case in cases if case.target_evidence))
 
 
 def verify_reproductions(review: Review, evidence: ReproductionEvidence, repository: Path,
                          codex_binary: str, gitnexus_binary: str,
                          reasoning_effort: str = "low") -> VerificationDecision:
-    confirmed = [item for item in evidence.results if item.status == "confirmed" and item.cleanup_verified]
+    confirmed = [item for item in evidence.results
+                 if item.status == "confirmed" and item.cleanup_verified and item.target_reached]
     if not confirmed:
         return VerificationDecision(evidence.head_sha, ())
     prompt = f"""You are the second, adversarial verification pass for code-review findings.
 Only the candidate findings listed in the reproduction evidence were executed against the test database.
-For each confirmed result, inspect the repository and GitNexus again and try to disprove that the observed result supports the exact candidate problem and impact. Accept an index only when the oracle is objective, the observation demonstrates that exact problem, cleanup was verified, and no concrete code path invalidates the conclusion. Never add, rewrite, or accept an unconfirmed finding. Silence is valid.
+For each confirmed result, inspect its executed reproduction script, the repository, and GitNexus again and try to disprove that the observed result supports the exact candidate problem and impact. Reject a result when observed is fabricated, is not derived from the reached target call or resulting DB state, or the target call is unrelated to the oracle. Accept an index only when the oracle is objective, expected and observed are genuinely comparable, the observation demonstrates that exact problem, target execution and cleanup were verified, and no concrete code path invalidates the conclusion. Never add, rewrite, or accept an unconfirmed finding. Silence is valid.
 
 Candidate review:
 {review.to_json()}
@@ -225,7 +255,7 @@ def retry_inconclusive_reproductions(
     failed_results = tuple(item for item in evidence.results if item.finding_index in failed_indexes)
     prompt = f"""You are repairing rollback-only Django reproduction scripts that failed before a verdict.
 Inspect the repository and return one corrected case for every supplied failed case. Preserve each finding_index. Fix the concrete exception without weakening the oracle or bypassing the changed business logic. Use django.utils.timezone.now() or another timezone-aware value whenever Django timezone handling is involved; never feed a naive datetime to timezone.localtime(). Keep all original safety restrictions: imports plus exactly reproduce(), no files, processes, network, external systems, commits, or transaction management. This is the only retry, so ensure fixture construction reaches the target code path.
-Each reproduce() must return confirmed, expected, observed, and a non-empty cleanup_checks list using the original runner contract. A false verdict is valid only after the target business logic ran with every stated precondition satisfied.
+Each reproduce() must return exact comparable expected and observed values plus a non-empty cleanup_checks list. The fixed runner alone decides the verdict after tracing target execution. Do not return confirmed. Every stated precondition must be satisfied before calling the target business logic.
 
 Failed cases:
 {ReproductionPlan(plan.head_sha, failed_cases).to_json()}
@@ -250,7 +280,8 @@ Failure evidence:
     originals = {case.finding_index: case for case in failed_cases}
     repaired = ReproductionPlan(plan.head_sha, tuple(
         ReproductionCase(case.finding_index, originals[case.finding_index].condition,
-                         originals[case.finding_index].oracle, case.script)
+                         originals[case.finding_index].oracle, case.script,
+                         originals[case.finding_index].target_evidence)
         for case in repaired.cases if case.finding_index in failed_indexes
     ))
     if not repaired.cases:
@@ -315,7 +346,8 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
             case_path.write_text(case.script, encoding="utf-8")
             started = time.monotonic()
             try:
-                process = subprocess.run([python, str(runner), str(case_path), str(output_path), json.dumps(required_settings)],
+                process = subprocess.run([python, str(runner), str(case_path), str(output_path),
+                                          json.dumps(required_settings), json.dumps(case.target_evidence)],
                                          cwd=repository, env=environment, capture_output=True, text=True,
                                          encoding="utf-8", errors="replace", timeout=timeout, check=False)
                 payload = json.loads(output_path.read_text(encoding="utf-8")) if output_path.exists() else {}
@@ -323,15 +355,18 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
                 expected = str(payload.get("expected", case.oracle))[:1000]
                 observed = str(payload.get("observed", (process.stderr or "execution failed")[-1000:]))[:1000]
                 cleanup = payload.get("cleanup_verified") is True
+                target_reached = payload.get("target_reached") is True
+                reached_targets = tuple(payload.get("reached_targets", ()))
                 population = _population(payload)
                 if not cleanup:
                     status = "inconclusive"
             except (OSError, subprocess.TimeoutExpired, json.JSONDecodeError) as exc:
                 status, expected, observed, cleanup = "inconclusive", case.oracle, type(exc).__name__, False
+                target_reached, reached_targets = False, ()
                 population = (None, None, None)
             results.append(ReproductionResult(case.finding_index, status, case.condition, case.oracle,
                                               expected, observed, cleanup, round(time.monotonic() - started, 3),
-                                              *population))
+                                              *population, target_reached, reached_targets, case.script))
     return _complete_evidence(plan, results)
 
 
@@ -366,11 +401,12 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
                     decision: VerificationDecision | None = None) -> Review:
     accepted = (set(decision.accepted_finding_indices) if decision is not None else
                 {item.finding_index for item in evidence.results
-                 if item.status == "confirmed" and item.cleanup_verified})
+                 if item.status == "confirmed" and item.cleanup_verified and item.target_reached})
     confirmed: list[ReproducedFinding] = []
     confirmed_indexes: set[int] = set()
     for result in evidence.results:
-        if result.status != "confirmed" or not result.cleanup_verified or result.finding_index not in accepted:
+        if (result.status != "confirmed" or not result.cleanup_verified or not result.target_reached
+                or result.finding_index not in accepted):
             continue
         try:
             finding = review.findings[result.finding_index]
@@ -379,7 +415,8 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
         confirmed.append(ReproducedFinding(finding.problem, finding.impact, finding.evidence,
                                            result.condition, result.oracle, result.expected,
                                            result.observed, True, result.population_label,
-                                           result.matching_count, result.total_count))
+                                           result.matching_count, result.total_count,
+                                           result.reached_targets))
         confirmed_indexes.add(result.finding_index)
     results = {item.finding_index: item for item in evidence.results}
     static_findings = []
@@ -389,6 +426,8 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
         result = results.get(index)
         if result is None:
             status, detail = "unplanned", "현재 Django/ORM 롤백 재현 범위에서 계획되지 않음"
+        elif result.status == "confirmed" and not result.target_reached:
+            status, detail = "inconclusive", "변경 근거 코드 도달이 확인되지 않음"
         elif result.status == "confirmed":
             status, detail = "verification_rejected", "재현 결과가 문제와 영향을 입증하기에 불충분함"
         elif result.status == "refuted":
@@ -425,11 +464,32 @@ try:
     spec = importlib.util.spec_from_file_location("reproduction_case", sys.argv[1])
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
+    repository = Path.cwd().resolve()
+    targets = {}
+    for reference in json.loads(sys.argv[4]):
+        path, line = reference.rsplit(":", 1)
+        targets.setdefault(path.replace("\\", "/"), set()).add(int(line))
+    reached = set()
+    def trace(frame, event, arg):
+        if event != "line":
+            return trace
+        try:
+            path = Path(frame.f_code.co_filename).resolve().relative_to(repository).as_posix()
+        except ValueError:
+            return trace
+        for target_line in targets.get(path, ()):
+            if abs(frame.f_lineno - target_line) <= 3:
+                reached.add(f"{path}:{target_line}")
+        return trace
     aliases = list(connections)
     with ExitStack() as stack:
         for alias in aliases:
             stack.enter_context(transaction.atomic(using=alias))
-        result = module.reproduce()
+        sys.settrace(trace)
+        try:
+            result = module.reproduce()
+        finally:
+            sys.settrace(None)
         for alias in aliases:
             transaction.set_rollback(True, using=alias)
     connections.close_all()
@@ -442,13 +502,25 @@ try:
         else:
             row = query.get()
             cleanup = cleanup and str(getattr(row, check["field"])) == str(check["equals"])
-    write({"status": "confirmed" if result.get("confirmed") else "refuted",
-           "expected": str(result.get("expected", "")), "observed": str(result.get("observed", "")),
+    has_values = "expected" in result and "observed" in result
+    target_reached = bool(reached)
+    if not targets:
+        status, observed = "inconclusive", "실행 가능한 Python target evidence가 없음"
+    elif not target_reached:
+        status, observed = "inconclusive", "변경 근거 코드에 도달하지 못함: " + ", ".join(sorted(targets))
+    elif not has_values:
+        status, observed = "inconclusive", "expected/observed 관찰값이 없음"
+    else:
+        status, observed = ("confirmed" if result["expected"] != result["observed"] else "refuted",
+                            str(result["observed"]))
+    write({"status": status,
+           "expected": str(result.get("expected", "")), "observed": observed,
            "cleanup_verified": cleanup,
+           "target_reached": target_reached, "reached_targets": sorted(reached),
            "population_label": result.get("population_label"),
            "matching_count": result.get("matching_count"), "total_count": result.get("total_count")})
 except Exception as exc:
     write({"status": "inconclusive", "expected": "", "observed": f"{type(exc).__name__}: {exc}",
-           "cleanup_verified": False})
+           "cleanup_verified": False, "target_reached": False, "reached_targets": []})
     raise
 '''

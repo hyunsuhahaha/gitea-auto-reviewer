@@ -254,20 +254,24 @@ class ReproducedFinding:
     population_label: str | None = None
     matching_count: int | None = None
     total_count: int | None = None
+    reached_targets: tuple[str, ...] = ()
 
     @classmethod
     def from_value(cls, value: object) -> "ReproducedFinding":
         required = {"problem", "impact", "evidence", "condition", "oracle", "expected", "observed", "cleanup_verified"}
-        optional = {"population_label", "matching_count", "total_count"}
+        optional = {"population_label", "matching_count", "total_count", "reached_targets"}
         if (not isinstance(value, dict) or not required <= set(value) <= required | optional
                 or value["cleanup_verified"] is not True):
             raise ValueError("invalid reproduced finding")
         population = _population(value.get("population_label"), value.get("matching_count"),
                                  value.get("total_count"))
+        reached = value.get("reached_targets", [])
+        if not isinstance(reached, (list, tuple)) or any(not isinstance(ref, str) for ref in reached):
+            raise ValueError("invalid reproduced target evidence")
         return cls(_text(value["problem"], "problem"), _text(value["impact"], "impact"),
                    _references(value["evidence"], True), _text(value["condition"], "condition"),
                    _text(value["oracle"], "oracle"), _short_text(value["expected"], "expected", empty=True),
-                   _text(value["observed"], "observed"), True, *population)
+                   _text(value["observed"], "observed"), True, *population, tuple(reached))
 
 
 @dataclass(frozen=True)
@@ -641,6 +645,8 @@ def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...]) -> list
                 f"{finding.matching_count:,}/{finding.total_count:,}건 ({rate:.2f}%)"
             )
         lines.append(f"    관찰 결과: {finding.observed}")
+        if finding.reached_targets:
+            lines.append(f"    실행 도달: {', '.join(finding.reached_targets)}")
         lines.append("    롤백 검증: 통과")
         lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
     return ["", *lines]

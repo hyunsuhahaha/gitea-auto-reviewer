@@ -1,4 +1,7 @@
 import json
+import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -16,7 +19,9 @@ from gitea_auto_reviewer.reproduction import (
     build_plan_prompt,
     finalize_review,
     plan_reproductions,
+    run_reproductions,
     retry_inconclusive_reproductions,
+    verify_reproductions,
     _complete_evidence,
     validate_script,
 )
@@ -29,6 +34,64 @@ SHA = "a" * 40
 
 def test_reproduction_runner_imports_project_from_checkout_root() -> None:
     assert 'sys.path.insert(0, str(Path.cwd()))' in _RUNNER_SOURCE
+
+
+def test_runner_requires_target_reach_and_decides_from_observed_values(tmp_path) -> None:
+    repository = tmp_path / "repository"
+    repository.mkdir()
+    database = repository / "test.sqlite3"
+    with sqlite3.connect(database) as connection:
+        connection.execute("create table auth_user (id integer primary key, username text)")
+    (repository / "settings.py").write_text(
+        "SECRET_KEY = 'test'\n"
+        "INSTALLED_APPS = ['django.contrib.auth', 'django.contrib.contenttypes']\n"
+        f"DATABASES = {{'default': {{'ENGINE': 'django.db.backends.sqlite3', 'NAME': {str(database)!r}}}}}\n"
+        "USE_TZ = True\n",
+        encoding="utf-8",
+    )
+    (repository / "pytest.ini").write_text(
+        "[pytest]\nDJANGO_SETTINGS_MODULE = settings\n", encoding="utf-8"
+    )
+    (repository / "target.py").write_text(
+        "def changed_value():\n    return 1\n", encoding="utf-8"
+    )
+    script = (
+        "from target import changed_value\n"
+        "def reproduce():\n"
+        "    observed = changed_value()\n"
+        "    return {'confirmed': False, 'expected': 2, 'observed': observed, 'cleanup_checks': "
+        "[{'model': 'auth.User', 'lookup': {'username': 'missing'}, 'exists': False}]}\n"
+    )
+    subprocess.run(["git", "init"], cwd=repository, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=repository, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=repository, check=True)
+    subprocess.run(["git", "add", "."], cwd=repository, check=True)
+    subprocess.run(["git", "commit", "-m", "fixture"], cwd=repository, check=True, capture_output=True)
+    sha = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repository, check=True,
+        capture_output=True, text=True,
+    ).stdout.strip()
+
+    reached = run_reproductions(
+        ReproductionPlan(sha, (ReproductionCase(
+            0, "조건", "2", script, ("target.py:2",),
+        ),)),
+        repository, sys.executable, 30,
+    ).results[0]
+    missed = run_reproductions(
+        ReproductionPlan(sha, (ReproductionCase(
+            0, "조건", "2", script, ("target.py:20",),
+        ),)),
+        repository, sys.executable, 30,
+    ).results[0]
+
+    assert reached.status == "confirmed"
+    assert reached.target_reached is True
+    assert reached.reached_targets == ("target.py:2",)
+    assert reached.expected == "2" and reached.observed == "1"
+    assert missed.status == "inconclusive"
+    assert missed.target_reached is False
+    assert "도달하지 못함" in missed.observed
 
 
 def test_reproduction_uses_pytest_django_settings(monkeypatch, tmp_path) -> None:
@@ -45,7 +108,8 @@ def test_reproduction_uses_pytest_django_settings(monkeypatch, tmp_path) -> None
 def test_reproduction_plan_requires_korean_user_visible_text() -> None:
     prompt = build_plan_prompt(Review.from_json(json.dumps(impact_payload())), SHA)
     assert "condition" in prompt and "expected" in prompt and "observed" in prompt
-    assert "must be Korean" in prompt
+    assert "condition` and `oracle` in Korean" in prompt
+    assert "exact JSON-compatible business values" in prompt
     assert "1-6 concise, unnumbered lines" in prompt
     assert "Do not present arbitrary fixture values" in prompt
     assert "only in `observed`" in prompt
@@ -137,15 +201,24 @@ def test_plan_uses_medium_reasoning(monkeypatch, tmp_path) -> None:
 
     def fake_codex(*args, **kwargs):
         captured.update(kwargs)
-        return json.dumps({"version": 1, "head_sha": SHA, "cases": []})
+        return json.dumps({"version": 1, "head_sha": SHA, "cases": [{
+            "finding_index": 0,
+            "condition": "조건",
+            "oracle": "기준",
+            "script": "def reproduce():\n    return {}\n",
+        }]})
 
     monkeypatch.setattr("gitea_auto_reviewer.reproduction.run_codex_json", fake_codex)
 
-    plan_reproductions(
+    plan = plan_reproductions(
         Review.from_json(json.dumps(impact_payload())), SHA, tmp_path, "codex", "gitnexus",
     )
 
     assert captured["reasoning_effort"] == "medium"
+    assert plan.cases[0].target_evidence == (
+        "product/models.py:31", "product/models.py:44", "product/services.py:18",
+    )
+    assert ReproductionPlan.from_json(plan.to_json(), 1) == plan
 
 
 def test_reproduction_script_allows_in_memory_string_replacement() -> None:
@@ -173,7 +246,8 @@ def test_inconclusive_reproduction_is_repaired_and_retried(monkeypatch, tmp_path
     def fake_reproduce(repaired, *args, **kwargs):
         captured["repaired"] = repaired
         return ReproductionEvidence(SHA, (
-            ReproductionResult(0, "confirmed", "조건", "기준", "정상", "오류", True, 0.2),
+            ReproductionResult(0, "confirmed", "조건", "기준", "정상", "오류", True, 0.2,
+                               target_reached=True, reached_targets=("product/models.py:1",)),
         ))
 
     monkeypatch.setattr("gitea_auto_reviewer.reproduction.run_codex_json", fake_codex)
@@ -255,7 +329,7 @@ def test_finalize_keeps_only_confirmed_cleanup_verified_findings() -> None:
     review = Review.from_json(json.dumps(impact_payload()))
     evidence = ReproductionEvidence(SHA, (
         ReproductionResult(0, "confirmed", "기존 행", "성공", "성공", "오류 응답", True, 1.2,
-                           "포장 투입 버킷", 467, 2481),
+                           "포장 투입 버킷", 467, 2481, True, ("product/models.py:31",)),
     ))
     final = finalize_review(review, evidence)
     rendered = render_markdown(final, 1, SHA, "테스트")
@@ -276,7 +350,8 @@ def test_invalid_population_is_ignored_without_changing_reproduction_status() ->
 def test_finalize_retains_a_single_failed_reproduction_as_static_analysis() -> None:
     review = Review.from_json(json.dumps(impact_payload()))
     evidence = ReproductionEvidence(SHA, (
-        ReproductionResult(0, "refuted", "조건", "정상", "정상", "정상", True, 0.1),
+        ReproductionResult(0, "refuted", "조건", "정상", "정상", "정상", True, 0.1,
+                           target_reached=True, reached_targets=("product/models.py:31",)),
     ))
     final = finalize_review(review, evidence)
     assert final.findings[0].reproduction_status == "not_reproduced"
@@ -303,7 +378,8 @@ def test_finalize_retains_unplanned_or_inconclusive_findings_as_static_analysis(
 def test_finalize_retains_second_pass_rejection_as_static_analysis() -> None:
     review = Review.from_json(json.dumps(impact_payload()))
     evidence = ReproductionEvidence(SHA, (
-        ReproductionResult(0, "confirmed", "조건", "정상", "정상", "오류", True, 0.1),
+        ReproductionResult(0, "confirmed", "조건", "정상", "정상", "오류", True, 0.1,
+                           target_reached=True, reached_targets=("product/models.py:31",)),
     ))
 
     final = finalize_review(review, evidence, VerificationDecision(SHA, ()))
@@ -312,9 +388,52 @@ def test_finalize_retains_second_pass_rejection_as_static_analysis() -> None:
     assert final.reproduced_findings == ()
 
 
+def test_confirmed_claim_without_target_reach_is_not_publishable() -> None:
+    review = Review.from_json(json.dumps(impact_payload()))
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(0, "confirmed", "조건", "정상", "1", "2", True, 0.1),
+    ))
+
+    final = finalize_review(review, evidence)
+
+    assert final.reproduced_findings == ()
+    assert final.findings[0].reproduction_status == "inconclusive"
+    with pytest.raises(ValueError, match="only confirmed"):
+        VerificationDecision.from_json(json.dumps({
+            "version": 1, "head_sha": SHA, "accepted_finding_indices": [0],
+        }), evidence)
+
+
+def test_second_pass_inspects_the_executed_script(monkeypatch, tmp_path) -> None:
+    review = Review.from_json(json.dumps(impact_payload()))
+    script = "def reproduce():\n    return {'expected': 1, 'observed': 2}\n"
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(
+            0, "confirmed", "조건", "정상", "1", "2", True, 0.1,
+            target_reached=True, reached_targets=("product/models.py:31",), script=script,
+        ),
+    ))
+    captured = {}
+
+    def fake_codex(prompt, *args, **kwargs):
+        captured["prompt"] = prompt
+        return json.dumps({
+            "version": 1, "head_sha": SHA, "accepted_finding_indices": [0],
+        })
+
+    monkeypatch.setattr("gitea_auto_reviewer.reproduction.run_codex_json", fake_codex)
+
+    decision = verify_reproductions(review, evidence, tmp_path, "codex", "gitnexus")
+
+    assert decision.accepted_finding_indices == (0,)
+    assert json.dumps(script, ensure_ascii=False)[1:-1] in captured["prompt"]
+    assert "not derived from the reached target" in captured["prompt"]
+
+
 def test_second_pass_can_only_accept_confirmed_reproductions() -> None:
     evidence = ReproductionEvidence(SHA, (
-        ReproductionResult(0, "confirmed", "조건", "정상", "정상", "오류", True, 0.1),
+        ReproductionResult(0, "confirmed", "조건", "정상", "정상", "오류", True, 0.1,
+                           target_reached=True, reached_targets=("product/models.py:31",)),
         ReproductionResult(1, "refuted", "조건", "정상", "정상", "정상", True, 0.1),
     ))
     decision = VerificationDecision.from_json(json.dumps({
