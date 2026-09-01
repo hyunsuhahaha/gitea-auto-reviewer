@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import configparser
 import json
 import subprocess
 import tempfile
@@ -245,7 +246,7 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
         runner = root / "runner.py"
         runner.write_text(_RUNNER_SOURCE, encoding="utf-8")
         (root / "home").mkdir()
-        environment = safe_evidence_environment(root / "home")
+        environment = _reproduction_environment(root / "home", repository)
         for position, case in enumerate(plan.cases):
             case_path, output_path = root / f"case-{position}.py", root / f"result-{position}.json"
             case_path.write_text(case.script, encoding="utf-8")
@@ -281,6 +282,17 @@ def _population(payload: dict[str, Any]) -> tuple[str | None, int | None, int | 
     return label.strip(), matching, total
 
 
+def _reproduction_environment(home: Path, repository: Path) -> dict[str, str]:
+    environment = safe_evidence_environment(home)
+    if not environment.get("DJANGO_SETTINGS_MODULE"):
+        parser = configparser.ConfigParser(interpolation=None)
+        parser.read(repository / "pytest.ini", encoding="utf-8")
+        module = parser.get("pytest", "DJANGO_SETTINGS_MODULE", fallback="").strip()
+        if module:
+            environment["DJANGO_SETTINGS_MODULE"] = module
+    return environment
+
+
 def _complete_evidence(plan: ReproductionPlan, results: list[ReproductionResult]) -> ReproductionEvidence:
     if len(results) != len(plan.cases):
         raise RuntimeError("reproduction result count does not match the plan")
@@ -307,10 +319,22 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
                                            result.matching_count, result.total_count))
         confirmed_indexes.add(result.finding_index)
     refuted_indexes = {item.finding_index for item in evidence.results if item.status == "refuted"}
-    static_findings = tuple(finding for index, finding in enumerate(review.findings)
-                            if index not in confirmed_indexes and index not in refuted_indexes)
+    results = {item.finding_index: item for item in evidence.results}
+    static_findings = []
+    for index, finding in enumerate(review.findings):
+        if index in confirmed_indexes or index in refuted_indexes:
+            continue
+        result = results.get(index)
+        if result is None:
+            status, detail = "unplanned", "현재 Django/ORM 롤백 재현 범위에서 계획되지 않음"
+        elif result.status == "confirmed":
+            status, detail = "verification_rejected", "재현 결과가 문제와 영향을 입증하기에 불충분함"
+        else:
+            status, detail = "inconclusive", result.observed or "실행 결과를 판정하지 못함"
+        static_findings.append(replace(finding, reproduction_status=status,
+                                       reproduction_detail=detail[:1000]))
     if confirmed or static_findings:
-        return replace(review, findings=static_findings, reproduced_findings=tuple(confirmed))
+        return replace(review, findings=tuple(static_findings), reproduced_findings=tuple(confirmed))
     return replace(review, findings=(), reproduced_findings=(), risk="low",
                    risk_confidence="high", risk_evidence=())
 

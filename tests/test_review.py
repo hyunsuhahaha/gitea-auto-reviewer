@@ -320,7 +320,7 @@ def test_renderer_states_when_no_reproduced_problem_survives() -> None:
 
     rendered = render_markdown(review, 1, "a" * 40, "테스트")
 
-    assert "재현된 문제\n  • 자동 재현 및 2차 검증을 통과" in rendered
+    assert "재현된 문제\n  • 확정된 재현 문제 없음" in rendered
 
 
 def test_renderer_separates_unreproduced_static_findings() -> None:

@@ -186,11 +186,14 @@ class Finding:
     impact: str
     evidence: tuple[str, ...]
     policy_quote: str | None
+    reproduction_status: str | None = None
+    reproduction_detail: str | None = None
 
     @classmethod
     def from_value(cls, value: object) -> Finding:
-        names = {"category", "problem", "impact", "evidence", "policy_quote"}
-        if not isinstance(value, dict) or set(value) != names:
+        required = {"category", "problem", "impact", "evidence", "policy_quote"}
+        optional = {"reproduction_status", "reproduction_detail"}
+        if not isinstance(value, dict) or not required <= set(value) <= required | optional:
             raise ValueError("finding does not match the required schema")
         category = value["category"]
         if category not in {"bug", "security", "performance", "dependency", "policy"}:
@@ -201,7 +204,15 @@ class Finding:
             quote = _text(quote, "policy_quote")
         elif quote is not None:
             raise ValueError("policy_quote is only allowed for policy findings")
-        return cls(category, *strings, _references(value["evidence"], required=True), quote)
+        status = value.get("reproduction_status")
+        if status not in {None, "unplanned", "inconclusive", "verification_rejected"}:
+            raise ValueError("invalid finding reproduction status")
+        detail = value.get("reproduction_detail")
+        if detail is not None:
+            detail = _short_text(detail, "reproduction_detail")
+        if (status is None) != (detail is None):
+            raise ValueError("finding reproduction status and detail must be provided together")
+        return cls(category, *strings, _references(value["evidence"], required=True), quote, status, detail)
 
 
 @dataclass(frozen=True)
@@ -577,7 +588,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         *[f"• {item}" for item in review.key_changes],
         "",
         *(_reproduced_finding_section(review.reproduced_findings)
-          if review.reproduced_findings else ["", "재현된 문제", "  • 자동 재현 및 2차 검증을 통과"]),
+          if review.reproduced_findings else ["", "재현된 문제", "  • 확정된 재현 문제 없음"]),
         *(_finding_section(static_findings) if static_findings else []),
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
@@ -597,6 +608,13 @@ def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
             lines.append("")
         lines.append(f"  • {finding.problem}")
         lines.append(f"    영향: {finding.impact}")
+        if finding.reproduction_status:
+            label = {
+                "unplanned": "미실행",
+                "inconclusive": "실행 불확정",
+                "verification_rejected": "2차 검증 미채택",
+            }[finding.reproduction_status]
+            lines.append(f"    재현 상태: {label} — {finding.reproduction_detail}")
         if finding.policy_quote:
             lines.append(f'    규칙: "{finding.policy_quote}"')
         lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))

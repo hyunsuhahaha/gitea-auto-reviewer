@@ -12,6 +12,7 @@ from gitea_auto_reviewer.reproduction import (
     VerificationDecision,
     _RUNNER_SOURCE,
     _population,
+    _reproduction_environment,
     build_plan_prompt,
     finalize_review,
     plan_reproductions,
@@ -27,6 +28,17 @@ SHA = "a" * 40
 
 def test_reproduction_runner_imports_project_from_checkout_root() -> None:
     assert 'sys.path.insert(0, str(Path.cwd()))' in _RUNNER_SOURCE
+
+
+def test_reproduction_uses_pytest_django_settings(monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("DJANGO_SETTINGS_MODULE", raising=False)
+    (tmp_path / "pytest.ini").write_text(
+        "[pytest]\nDJANGO_SETTINGS_MODULE = configurations.ci\n", encoding="utf-8"
+    )
+
+    environment = _reproduction_environment(tmp_path / "home", tmp_path)
+
+    assert environment["DJANGO_SETTINGS_MODULE"] == "configurations.ci"
 
 
 def test_reproduction_plan_requires_korean_user_visible_text() -> None:
@@ -181,8 +193,11 @@ def test_finalize_retains_unplanned_or_inconclusive_findings_as_static_analysis(
         ReproductionResult(0, "inconclusive", "조건", "정상", "", "시간 초과", False, 180.0),
     )))
 
-    assert unplanned.findings == review.findings
-    assert inconclusive.findings == review.findings
+    assert unplanned.findings[0].reproduction_status == "unplanned"
+    assert inconclusive.findings[0].reproduction_status == "inconclusive"
+    assert inconclusive.findings[0].reproduction_detail == "시간 초과"
+    rendered = render_markdown(Review.from_json(inconclusive.to_json()), 1, SHA, "테스트")
+    assert "재현 상태: 실행 불확정 — 시간 초과" in rendered
     assert unplanned.risk == inconclusive.risk == review.risk
 
 
@@ -194,7 +209,7 @@ def test_finalize_retains_second_pass_rejection_as_static_analysis() -> None:
 
     final = finalize_review(review, evidence, VerificationDecision(SHA, ()))
 
-    assert final.findings == review.findings
+    assert final.findings[0].reproduction_status == "verification_rejected"
     assert final.reproduced_findings == ()
 
 
