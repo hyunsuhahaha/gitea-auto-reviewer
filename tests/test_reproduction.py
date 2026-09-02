@@ -13,6 +13,7 @@ from gitea_auto_reviewer.reproduction import (
     ReproductionPlan,
     ReproductionResult,
     VerificationDecision,
+    VerificationRejection,
     _RUNNER_SOURCE,
     _population,
     _reproduction_environment,
@@ -356,7 +357,7 @@ def test_finalize_retains_a_single_failed_reproduction_as_static_analysis() -> N
     final = finalize_review(review, evidence)
     assert final.findings[0].reproduction_status == "not_reproduced"
     assert final.reproduced_findings == ()
-    assert "재현 상태: 실행상 미재현 — 정상" in render_markdown(final, 1, SHA, "테스트")
+    assert "재현 결과: 실행상 미재현 — 정상" in render_markdown(final, 1, SHA, "테스트")
 
 
 def test_finalize_retains_unplanned_or_inconclusive_findings_as_static_analysis() -> None:
@@ -371,7 +372,7 @@ def test_finalize_retains_unplanned_or_inconclusive_findings_as_static_analysis(
     assert inconclusive.findings[0].reproduction_status == "inconclusive"
     assert inconclusive.findings[0].reproduction_detail == "시간 초과"
     rendered = render_markdown(Review.from_json(inconclusive.to_json()), 1, SHA, "테스트")
-    assert "재현 상태: 실행 불확정 — 시간 초과" in rendered
+    assert "재현 결과: 실행 불확정 — 시간 초과" in rendered
     assert unplanned.risk == inconclusive.risk == review.risk
 
 
@@ -382,9 +383,15 @@ def test_finalize_retains_second_pass_rejection_as_static_analysis() -> None:
                            target_reached=True, reached_targets=("product/models.py:31",)),
     ))
 
-    final = finalize_review(review, evidence, VerificationDecision(SHA, ()))
+    reason = "관찰값이 대상 호출 결과가 아니라 스크립트 상수에서 생성됨"
+    final = finalize_review(review, evidence, VerificationDecision(
+        SHA, (), (VerificationRejection(0, reason),),
+    ))
 
     assert final.findings[0].reproduction_status == "verification_rejected"
+    rendered = render_markdown(final, 1, SHA, "테스트")
+    assert "재현 성공 후 2차 검증 미채택" in rendered
+    assert f"미채택 사유: {reason}" in rendered
     assert final.reproduced_findings == ()
 
 
@@ -401,6 +408,7 @@ def test_confirmed_claim_without_target_reach_is_not_publishable() -> None:
     with pytest.raises(ValueError, match="only confirmed"):
         VerificationDecision.from_json(json.dumps({
             "version": 1, "head_sha": SHA, "accepted_finding_indices": [0],
+            "rejected_findings": [],
         }), evidence)
 
 
@@ -419,6 +427,7 @@ def test_second_pass_inspects_the_executed_script(monkeypatch, tmp_path) -> None
         captured["prompt"] = prompt
         return json.dumps({
             "version": 1, "head_sha": SHA, "accepted_finding_indices": [0],
+            "rejected_findings": [],
         })
 
     monkeypatch.setattr("gitea_auto_reviewer.reproduction.run_codex_json", fake_codex)
@@ -438,10 +447,67 @@ def test_second_pass_can_only_accept_confirmed_reproductions() -> None:
     ))
     decision = VerificationDecision.from_json(json.dumps({
         "version": 1, "head_sha": SHA, "accepted_finding_indices": [0],
+        "rejected_findings": [],
     }), evidence)
     assert decision.accepted_finding_indices == (0,)
 
     with pytest.raises(ValueError, match="only confirmed"):
         VerificationDecision.from_json(json.dumps({
             "version": 1, "head_sha": SHA, "accepted_finding_indices": [1],
+            "rejected_findings": [{"finding_index": 0, "reason": "실제 결과와 무관"}],
         }), evidence)
+
+
+def test_second_pass_must_explain_every_rejected_confirmed_finding() -> None:
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(
+            0, "confirmed", "조건", "정상", "1", "2", True, 0.1,
+            target_reached=True, reached_targets=("product/models.py:31",),
+        ),
+    ))
+
+    with pytest.raises(ValueError, match="explain every rejected"):
+        VerificationDecision.from_json(json.dumps({
+            "version": 1, "head_sha": SHA,
+            "accepted_finding_indices": [], "rejected_findings": [],
+        }), evidence)
+    with pytest.raises(ValueError, match="rejection reasons"):
+        VerificationDecision.from_json(json.dumps({
+            "version": 1, "head_sha": SHA, "accepted_finding_indices": [],
+            "rejected_findings": [{"finding_index": 0, "reason": "   "}],
+        }), evidence)
+    with pytest.raises(ValueError, match="concrete Korean"):
+        VerificationDecision.from_json(json.dumps({
+            "version": 1, "head_sha": SHA, "accepted_finding_indices": [],
+            "rejected_findings": [{
+                "finding_index": 0,
+                "reason": "재현 결과가 문제와 영향을 입증하기에 불충분함",
+            }],
+        }), evidence)
+
+
+def test_renderer_separates_unreproduced_from_verification_rejected() -> None:
+    payload = impact_payload()
+    second = dict(payload["findings"][0])
+    second["problem"] = "재현 후 검증에서 거절된 문제"
+    payload["findings"].append(second)
+    review = Review.from_json(json.dumps(payload))
+    evidence = ReproductionEvidence(SHA, (
+        ReproductionResult(0, "inconclusive", "조건", "정상", "", "시간 초과", False, 180),
+        ReproductionResult(
+            1, "confirmed", "조건", "정상", "1", "2", True, 0.1,
+            target_reached=True, reached_targets=("product/models.py:31",),
+        ),
+    ))
+    reason = "관찰값 2가 대상 호출 반환값이 아니라 재현 스크립트 상수에서 생성됨"
+
+    rendered = render_markdown(finalize_review(
+        review, evidence, VerificationDecision(
+            SHA, (), (VerificationRejection(1, reason),),
+        ),
+    ), 1, SHA, "테스트")
+
+    assert rendered.index("재현하지 못한 발견 사항") < rendered.index("재현 성공 후 2차 검증 미채택")
+    assert "재현 결과: 실행 불확정 — 시간 초과" in rendered
+    assert f"미채택 사유: {reason}" in rendered
+    assert "GitNexus 의존성 그래프와 저장소 코드에 근거하며" not in rendered

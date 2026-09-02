@@ -330,8 +330,8 @@ def test_renderer_separates_unreproduced_static_findings() -> None:
         Review.from_json(json.dumps(impact_payload())), 1, "a" * 40, "테스트"
     )
 
-    assert "정적 분석 발견 사항(미재현)" in rendered
-    assert "GitNexus 의존성 그래프와 저장소 코드에 근거" in rendered
+    assert "재현하지 못한 발견 사항" in rendered
+    assert "미실행, 실행 오류·시간초과·코드 미도달 또는 실행상 현상 미관찰" in rendered
     assert "  • 기존 Product 생성 경로가 remark를 전달하지 않음" in rendered
     assert "    영향:" in rendered
 

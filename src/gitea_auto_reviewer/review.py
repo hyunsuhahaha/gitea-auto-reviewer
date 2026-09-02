@@ -549,6 +549,12 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
     reproduced_keys = {(item.problem, item.impact, item.evidence) for item in review.reproduced_findings}
     static_findings = tuple(item for item in review.findings
                             if (item.problem, item.impact, item.evidence) not in reproduced_keys)
+    verification_rejected = tuple(
+        item for item in static_findings if item.reproduction_status == "verification_rejected"
+    )
+    unreproduced = tuple(
+        item for item in static_findings if item.reproduction_status != "verification_rejected"
+    )
     width = max(28, _display_width(heading) + 2)
     top = f"┌{'─' * width}┐"
     middle = f"├{'─' * width}┤"
@@ -593,7 +599,16 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         "",
         *(_reproduced_finding_section(review.reproduced_findings)
           if review.reproduced_findings else ["", "재현된 문제", "  • 확정된 재현 문제 없음"]),
-        *(_finding_section(static_findings) if static_findings else []),
+        *(_finding_section(
+            unreproduced,
+            "재현하지 못한 발견 사항",
+            "※ 미실행, 실행 오류·시간초과·코드 미도달 또는 실행상 현상 미관찰",
+        ) if unreproduced else []),
+        *(_finding_section(
+            verification_rejected,
+            "재현 성공 후 2차 검증 미채택",
+            "※ DB 재현·코드 도달·롤백 검증은 성공했으나 2차 검증에서 미채택",
+        ) if verification_rejected else []),
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
@@ -604,22 +619,22 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
     return f"{marker}\n<!-- gitea-auto-reviewer-state:{state} -->\n\n```text\n" + "\n".join(lines).rstrip() + "\n```"
 
 
-def _finding_section(findings: tuple[Finding, ...]) -> list[str]:
-    lines = ["정적 분석 발견 사항(미재현)",
-             "※ GitNexus 의존성 그래프와 저장소 코드에 근거하며 DB 재현으로 확정되지 않음"]
+def _finding_section(findings: tuple[Finding, ...], title: str, note: str) -> list[str]:
+    lines = [title, note]
     for finding in findings:
         if len(lines) > 2:
             lines.append("")
         lines.append(f"  • {finding.problem}")
         lines.append(f"    영향: {finding.impact}")
-        if finding.reproduction_status:
+        if finding.reproduction_status == "verification_rejected":
+            lines.append(f"    미채택 사유: {finding.reproduction_detail}")
+        elif finding.reproduction_status:
             label = {
                 "unplanned": "미실행",
                 "inconclusive": "실행 불확정",
                 "not_reproduced": "실행상 미재현",
-                "verification_rejected": "2차 검증 미채택",
             }[finding.reproduction_status]
-            lines.append(f"    재현 상태: {label} — {finding.reproduction_detail}")
+            lines.append(f"    재현 결과: {label} — {finding.reproduction_detail}")
         if finding.policy_quote:
             lines.append(f'    규칙: "{finding.policy_quote}"')
         lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))

@@ -38,13 +38,24 @@ PLAN_SCHEMA: dict[str, Any] = {
 
 VERIFICATION_SCHEMA: dict[str, Any] = {
     "type": "object", "additionalProperties": False,
-    "required": ["version", "head_sha", "accepted_finding_indices"],
+    "required": ["version", "head_sha", "accepted_finding_indices", "rejected_findings"],
     "properties": {
         "version": {"type": "integer", "const": 1},
         "head_sha": {"type": "string"},
         "accepted_finding_indices": {
             "type": "array",
             "items": {"type": "integer", "minimum": 0, "maximum": 4},
+        },
+        "rejected_findings": {
+            "type": "array",
+            "items": {
+                "type": "object", "additionalProperties": False,
+                "required": ["finding_index", "reason"],
+                "properties": {
+                    "finding_index": {"type": "integer", "minimum": 0, "maximum": 4},
+                    "reason": {"type": "string", "minLength": 10, "maxLength": 1000},
+                },
+            },
         },
     },
 }
@@ -149,14 +160,22 @@ class ReproductionEvidence:
 
 
 @dataclass(frozen=True)
+class VerificationRejection:
+    finding_index: int
+    reason: str
+
+
+@dataclass(frozen=True)
 class VerificationDecision:
     head_sha: str
     accepted_finding_indices: tuple[int, ...]
+    rejected_findings: tuple[VerificationRejection, ...] = ()
 
     @classmethod
     def from_json(cls, raw: str, evidence: ReproductionEvidence) -> "VerificationDecision":
         value = json.loads(raw)
-        if not isinstance(value, dict) or set(value) != {"version", "head_sha", "accepted_finding_indices"} or value["version"] != 1:
+        required = {"version", "head_sha", "accepted_finding_indices", "rejected_findings"}
+        if not isinstance(value, dict) or set(value) != required or value["version"] != 1:
             raise ValueError("invalid reproduction verification")
         indexes = value["accepted_finding_indices"]
         confirmed = {item.finding_index for item in evidence.results
@@ -164,14 +183,39 @@ class VerificationDecision:
         if (not isinstance(indexes, list) or any(type(index) is not int for index in indexes)
                 or len(indexes) != len(set(indexes)) or not set(indexes) <= confirmed):
             raise ValueError("verification may accept only confirmed findings")
+        rejected = value["rejected_findings"]
+        if not isinstance(rejected, list):
+            raise ValueError("invalid reproduction rejection reasons")
+        parsed_rejections: list[VerificationRejection] = []
+        for item in rejected:
+            if (not isinstance(item, dict) or set(item) != {"finding_index", "reason"}
+                    or type(item["finding_index"]) is not int
+                    or not isinstance(item["reason"], str) or len(item["reason"].strip()) < 10
+                    or len(item["reason"].strip()) > 1000):
+                raise ValueError("invalid reproduction rejection reasons")
+            reason = item["reason"].strip()
+            if (not any("가" <= char <= "힣" for char in reason)
+                    or reason.lower() in {"insufficient evidence", "증거가 불충분함",
+                                          "재현 결과가 문제와 영향을 입증하기에 불충분함"}):
+                raise ValueError("rejection reason must be concrete Korean text")
+            parsed_rejections.append(VerificationRejection(
+                item["finding_index"], reason
+            ))
+        rejected_indexes = [item.finding_index for item in parsed_rejections]
+        if (len(rejected_indexes) != len(set(rejected_indexes))
+                or set(indexes).intersection(rejected_indexes)
+                or set(indexes).union(rejected_indexes) != confirmed):
+            raise ValueError("verification must explain every rejected confirmed finding")
         head_sha = validate_sha(value["head_sha"])
         if head_sha != evidence.head_sha:
             raise ValueError("verification belongs to a different PR head SHA")
-        return cls(head_sha, tuple(indexes))
+        return cls(head_sha, tuple(indexes), tuple(parsed_rejections))
 
     def to_json(self) -> str:
         return json.dumps({"version": 1, "head_sha": self.head_sha,
-                           "accepted_finding_indices": list(self.accepted_finding_indices)}, indent=2)
+                           "accepted_finding_indices": list(self.accepted_finding_indices),
+                           "rejected_findings": [asdict(item) for item in self.rejected_findings]},
+                          ensure_ascii=False, indent=2)
 
 
 def build_plan_prompt(review: Review, head_sha: str) -> str:
@@ -220,10 +264,10 @@ def verify_reproductions(review: Review, evidence: ReproductionEvidence, reposit
     confirmed = [item for item in evidence.results
                  if item.status == "confirmed" and item.cleanup_verified and item.target_reached]
     if not confirmed:
-        return VerificationDecision(evidence.head_sha, ())
+        return VerificationDecision(evidence.head_sha, (), ())
     prompt = f"""You are the second, adversarial verification pass for code-review findings.
 Only the candidate findings listed in the reproduction evidence were executed against the test database.
-For each confirmed result, inspect its executed reproduction script, the repository, and GitNexus again and try to disprove that the observed result supports the exact candidate problem and impact. Reject a result when observed is fabricated, is not derived from the reached target call or resulting DB state, or the target call is unrelated to the oracle. Accept an index only when the oracle is objective, expected and observed are genuinely comparable, the observation demonstrates that exact problem, target execution and cleanup were verified, and no concrete code path invalidates the conclusion. Never add, rewrite, or accept an unconfirmed finding. Silence is valid.
+For each confirmed result, inspect its executed reproduction script, the repository, and GitNexus again and try to disprove that the observed result supports the exact candidate problem and impact. Reject a result when observed is fabricated, is not derived from the reached target call or resulting DB state, or the target call is unrelated to the oracle. Accept an index only when the oracle is objective, expected and observed are genuinely comparable, the observation demonstrates that exact problem, target execution and cleanup were verified, and no concrete code path invalidates the conclusion. Never add, rewrite, or accept an unconfirmed finding. Put every confirmed index in exactly one of accepted_finding_indices or rejected_findings. For every rejection, write a concrete Korean reason naming the missing or contradictory evidence; never use a generic phrase such as "insufficient evidence".
 
 Candidate review:
 {review.to_json()}
@@ -419,6 +463,8 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
                                            result.reached_targets))
         confirmed_indexes.add(result.finding_index)
     results = {item.finding_index: item for item in evidence.results}
+    rejection_reasons = ({item.finding_index: item.reason for item in decision.rejected_findings}
+                         if decision is not None else {})
     static_findings = []
     for index, finding in enumerate(review.findings):
         if index in confirmed_indexes:
@@ -429,7 +475,8 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
         elif result.status == "confirmed" and not result.target_reached:
             status, detail = "inconclusive", "변경 근거 코드 도달이 확인되지 않음"
         elif result.status == "confirmed":
-            status, detail = "verification_rejected", "재현 결과가 문제와 영향을 입증하기에 불충분함"
+            status = "verification_rejected"
+            detail = rejection_reasons.get(index, "2차 검증 미채택 사유가 기록되지 않음")
         elif result.status == "refuted":
             status, detail = "not_reproduced", result.observed or "조건 실행에서 문제를 관찰하지 못함"
         else:
