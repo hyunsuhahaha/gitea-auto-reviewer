@@ -15,7 +15,7 @@ def test_workflow_supports_manual_review_of_existing_pr() -> None:
     assert "steps.metadata.outputs.pr_number" in workflow
     assert "Run Django system check" in workflow
     assert "Run migration check" in workflow
-    assert "Run pytest" in workflow
+    assert "Run pytest with call tracing" in workflow
     assert "Combine deterministic evidence" in workflow
     assert "Show Codex reasoning settings" in workflow
     assert "vars.AI_REVIEW_FIRST_PASS_EFFORT" in workflow
@@ -29,3 +29,18 @@ def test_workflow_supports_manual_review_of_existing_pr() -> None:
     assert 'gitea-auto-review*.json' in workflow
     assert 'debug-runs' in workflow
     assert '$env:GITHUB_RUN_ID' in workflow
+
+
+def test_workflow_feeds_traced_impact_paths_and_base_sha_into_review_stages() -> None:
+    workflow = Path(".gitea/workflows/ai-review.yml").read_text(encoding="utf-8")
+    pytest_step = workflow.index("Run pytest with call tracing")
+    impact = workflow.index("Find Django impact paths missing from the static graph")
+    first = workflow.index("Generate first-pass Codex findings")
+    assert pytest_step < impact < first
+    assert '--trace-output "$env:TRACE_FILE"' in workflow
+    assert '--runtime-trace "$env:TRACE_FILE"' in workflow
+    assert '--impact-file "$env:IMPACT_FILE"' in workflow
+    plan = workflow[workflow.index("Plan rollback-only reproductions"):workflow.index("Reproduce candidate")]
+    reproduce = workflow[workflow.index("Reproduce candidate"):workflow.index("Verify reproduced")]
+    assert '--base-sha "$env:BASE_SHA"' in plan
+    assert '--base-sha "$env:BASE_SHA"' in reproduce

@@ -101,15 +101,21 @@ jobs:
             --only "migration_check" `
             --output "$env:CHECK_FILE"
 
-      - name: Run pytest
+      # The trace plugin records real call chains into and out of changed
+      # functions while the existing test suite runs.
+      - name: Run pytest with call tracing
         env:
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-pytest.json
+          TRACE_FILE: ${{ runner.temp }}\gitea-auto-review-trace.json
         run: |
           & $env:REVIEWER_EXE evidence `
             --head-sha "$env:HEAD_SHA" `
+            --base-sha "$env:BASE_SHA" `
             --python "$env:CI_PYTHON" `
             --only "pytest" `
+            --trace-output "$env:TRACE_FILE" `
             --output "$env:CHECK_FILE"
 
       - name: Combine deterministic evidence
@@ -125,6 +131,24 @@ jobs:
             --input "$env:PYTEST_FILE" `
             --output "$env:EVIDENCE_FILE"
 
+      # Runs PR code (django.setup) with the evidence allowlist environment and
+      # no Codex or Gitea credentials.
+      - name: Find Django impact paths missing from the static graph
+        env:
+          GITEA_TOKEN: ""
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+          TRACE_FILE: ${{ runner.temp }}\gitea-auto-review-trace.json
+          IMPACT_FILE: ${{ runner.temp }}\gitea-auto-review-impact.json
+        run: |
+          & $env:REVIEWER_EXE impact `
+            --base-sha "$env:BASE_SHA" `
+            --head-sha "$env:HEAD_SHA" `
+            --python "$env:CI_PYTHON" `
+            --runtime-trace "$env:TRACE_FILE" `
+            --gitnexus-binary "$env:GITNEXUS_EXE" `
+            --output "$env:IMPACT_FILE"
+
       - name: Show Codex reasoning settings
         run: "& $env:REVIEWER_EXE reasoning"
 
@@ -133,6 +157,7 @@ jobs:
           GITEA_TOKEN: ""
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
           EVIDENCE_FILE: ${{ runner.temp }}\gitea-auto-review-evidence.json
+          IMPACT_FILE: ${{ runner.temp }}\gitea-auto-review-impact.json
           REPOSITORY: ${{ gitea.repository }}
           PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
           PR_TITLE: ${{ steps.metadata.outputs.pr_title }}
@@ -148,18 +173,21 @@ jobs:
             --base-sha "$env:BASE_SHA" `
             --head-sha "$env:HEAD_SHA" `
             --evidence-file "$env:EVIDENCE_FILE" `
+            --impact-file "$env:IMPACT_FILE" `
             --gitnexus-binary "$env:GITNEXUS_EXE" `
             --output "$env:REVIEW_FILE"
 
       - name: Plan rollback-only reproductions
         env:
           GITEA_TOKEN: ""
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
           PLAN_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction-plan.json
         run: |
           & $env:REVIEWER_EXE plan `
             --head-sha "$env:HEAD_SHA" `
+            --base-sha "$env:BASE_SHA" `
             --review-file "$env:REVIEW_FILE" `
             --gitnexus-binary "$env:GITNEXUS_EXE" `
             --output "$env:PLAN_FILE"
@@ -167,14 +195,18 @@ jobs:
       # Executes selected Django code against the configured test DB. Every
       # case runs in transaction.atomic(), is forced to roll back, and must
       # pass a fresh-connection cleanup check before it can be published.
+      # Differential cases also run on a temporary worktree of the trusted
+      # base commit and compare row-level DB changes with the PR head.
       - name: Reproduce candidate findings with rollback
         env:
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           PLAN_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction-plan.json
           REPRODUCTION_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction.json
         run: |
           & $env:REVIEWER_EXE reproduce `
             --head-sha "$env:HEAD_SHA" `
+            --base-sha "$env:BASE_SHA" `
             --plan-file "$env:PLAN_FILE" `
             --python "$env:CI_PYTHON" `
             --require-setting "ERP_LIVE_SEND=false" `

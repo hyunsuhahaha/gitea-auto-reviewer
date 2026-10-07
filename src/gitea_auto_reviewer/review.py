@@ -31,7 +31,12 @@ FIELDS = {
     "findings",
     "reproduced_findings",
     "affected_files",
+    "impact_paths",
 }
+IMPACT_KINDS = {"signal", "orm_field", "url", "runtime_caller", "runtime_callee"}
+IMPACT_ORIGINS = {"django", "orm", "runtime"}
+IMPACT_PATH_FIELDS = ("kind", "source", "target", "detail", "evidence", "origin", "direction", "static_missed")
+MAX_RENDERED_IMPACT_PATHS = 12
 
 REVIEW_JSON_SCHEMA: dict[str, Any] = {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -72,8 +77,23 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
         "findings": {"$ref": "#/$defs/findings"},
         "reproduced_findings": {"type": "array", "items": {"$ref": "#/$defs/reproducedFinding"}},
         "affected_files": {"$ref": "#/$defs/affectedFiles"},
+        "impact_paths": {"type": "array", "items": {"$ref": "#/$defs/impactPath"}},
     },
     "$defs": {
+        "impactPath": {
+            "type": "object", "additionalProperties": False,
+            "required": list(IMPACT_PATH_FIELDS),
+            "properties": {
+                "kind": {"enum": sorted(IMPACT_KINDS)},
+                "source": {"type": "string", "maxLength": 300},
+                "target": {"type": "string", "maxLength": 300},
+                "detail": {"type": "string", "maxLength": 300},
+                "evidence": {"type": "string", "maxLength": 300},
+                "origin": {"enum": sorted(IMPACT_ORIGINS)},
+                "direction": {"enum": ["upstream", "downstream"]},
+                "static_missed": {"type": ["boolean", "null"]},
+            },
+        },
         "requiredItems": {
             "type": "array",
             "minItems": 1,
@@ -255,11 +275,15 @@ class ReproducedFinding:
     matching_count: int | None = None
     total_count: int | None = None
     reached_targets: tuple[str, ...] = ()
+    mode: str = "assert"
+    predicted_differences: tuple[str, ...] = ()
+    other_differences: tuple[str, ...] = ()
 
     @classmethod
     def from_value(cls, value: object) -> "ReproducedFinding":
         required = {"problem", "impact", "evidence", "condition", "oracle", "expected", "observed", "cleanup_verified"}
-        optional = {"population_label", "matching_count", "total_count", "reached_targets"}
+        optional = {"population_label", "matching_count", "total_count", "reached_targets",
+                    "mode", "predicted_differences", "other_differences"}
         if (not isinstance(value, dict) or not required <= set(value) <= required | optional
                 or value["cleanup_verified"] is not True):
             raise ValueError("invalid reproduced finding")
@@ -268,10 +292,50 @@ class ReproducedFinding:
         reached = value.get("reached_targets", [])
         if not isinstance(reached, (list, tuple)) or any(not isinstance(ref, str) for ref in reached):
             raise ValueError("invalid reproduced target evidence")
+        mode = value.get("mode", "assert")
+        if mode not in {"assert", "differential"}:
+            raise ValueError("invalid reproduced finding mode")
+        differences = []
+        for name in ("predicted_differences", "other_differences"):
+            items = value.get(name, [])
+            if (not isinstance(items, (list, tuple)) or len(items) > 10
+                    or any(not isinstance(item, str) or len(item) > 300 for item in items)):
+                raise ValueError(f"invalid {name}")
+            differences.append(tuple(items))
+        if mode == "differential" and not differences[0]:
+            raise ValueError("differential reproduced finding requires predicted differences")
         return cls(_text(value["problem"], "problem"), _text(value["impact"], "impact"),
                    _references(value["evidence"], True), _text(value["condition"], "condition"),
                    _text(value["oracle"], "oracle"), _short_text(value["expected"], "expected", empty=True),
-                   _text(value["observed"], "observed"), True, *population, tuple(reached))
+                   _text(value["observed"], "observed"), True, *population, tuple(reached),
+                   mode, *differences)
+
+
+@dataclass(frozen=True)
+class ImpactPath:
+    """A deterministic impact edge; static_missed is None when GitNexus was not compared."""
+
+    kind: str
+    source: str
+    target: str
+    detail: str
+    evidence: str
+    origin: str
+    direction: str
+    static_missed: bool | None = None
+
+
+def impact_path(value: object) -> ImpactPath:
+    if not isinstance(value, dict) or set(value) != set(IMPACT_PATH_FIELDS):
+        raise ValueError("invalid impact path")
+    if (value["kind"] not in IMPACT_KINDS or value["origin"] not in IMPACT_ORIGINS
+            or value["direction"] not in {"upstream", "downstream"}
+            or value["static_missed"] not in {True, False, None}):
+        raise ValueError("invalid impact path")
+    for name in ("source", "target", "detail", "evidence"):
+        if not isinstance(value[name], str) or not value[name].strip() or len(value[name]) > 300:
+            raise ValueError("invalid impact path")
+    return ImpactPath(**value)
 
 
 @dataclass(frozen=True)
@@ -296,6 +360,7 @@ class Review:
     findings: tuple[Finding, ...]
     reproduced_findings: tuple[ReproducedFinding, ...]
     affected_files: tuple[AffectedFile, ...]
+    impact_paths: tuple[ImpactPath, ...] = ()
 
     @classmethod
     def from_json(cls, raw: str) -> Review:
@@ -306,6 +371,8 @@ class Review:
         # Accept v0.1 stored reviews while the CLI always emits the v0.2 field.
         if isinstance(value, dict) and "reproduced_findings" not in value:
             value["reproduced_findings"] = []
+        if isinstance(value, dict) and "impact_paths" not in value:
+            value["impact_paths"] = []
         if not isinstance(value, dict) or set(value) != FIELDS:
             raise ValueError("review output does not match the change-impact schema")
         changed_files = value["changed_files"]
@@ -363,11 +430,12 @@ class Review:
             findings=_findings(value["findings"]),
             reproduced_findings=_reproduced_findings(value["reproduced_findings"]),
             affected_files=_affected_files(value["affected_files"], changed_file_paths),
+            impact_paths=_impact_paths(value["impact_paths"]),
         )
 
     def to_json(self) -> str:
         value = asdict(self)
-        for name in ("changed_file_paths", "external_integration_evidence", "risk_evidence", "key_changes", "findings", "reproduced_findings", "affected_files"):
+        for name in ("changed_file_paths", "external_integration_evidence", "risk_evidence", "key_changes", "findings", "reproduced_findings", "affected_files", "impact_paths"):
             value[name] = list(value[name])
         return json.dumps(value, ensure_ascii=False, indent=2)
 
@@ -441,6 +509,12 @@ def preserve_reproduced_findings(review: Review, previous_comment: str | None, h
         return review
     merged = tuple(dict.fromkeys((*previous, *review.reproduced_findings)))
     return replace(review, reproduced_findings=merged)
+
+
+def _impact_paths(value: object) -> tuple[ImpactPath, ...]:
+    if not isinstance(value, list) or len(value) > 40:
+        raise ValueError("impact_paths must contain 0-40 items")
+    return tuple(impact_path(item) for item in value)
 
 
 def _impact_details(value: object) -> tuple[ImpactDetail, ...]:
@@ -609,6 +683,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
             "재현 성공 후 2차 검증 미채택",
             "※ DB 재현·코드 도달·롤백 검증은 성공했으나 2차 검증에서 미채택",
         ) if verification_rejected else []),
+        *(_impact_path_section(review.impact_paths) if review.impact_paths else []),
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
@@ -659,12 +734,36 @@ def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...]) -> list
                 f"    버그 조건 충족률: {finding.population_label} "
                 f"{finding.matching_count:,}/{finding.total_count:,}건 ({rate:.2f}%)"
             )
-        lines.append(f"    관찰 결과: {finding.observed}")
+        if finding.mode == "differential":
+            lines.append("    base·head 차분 실행 (각 2회, 실행마다 달라지는 값 제외)")
+            lines.extend(f"      {line}" for line in finding.predicted_differences)
+            if finding.other_differences:
+                lines.append("    그 밖의 base 대비 차이")
+                lines.extend(f"      {line}" for line in finding.other_differences)
+        else:
+            lines.append(f"    관찰 결과: {finding.observed}")
         if finding.reached_targets:
             lines.append(f"    실행 도달: {', '.join(finding.reached_targets)}")
         lines.append("    롤백 검증: 통과")
         lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
     return ["", *lines]
+
+
+def _impact_path_section(paths: tuple[ImpactPath, ...]) -> list[str]:
+    ordered = sorted(paths, key=lambda item: (item.static_missed is not True, item.kind, item.source, item.target))
+    shown = ordered[:MAX_RENDERED_IMPACT_PATHS]
+    compared = any(item.static_missed is not None for item in paths)
+    lines = ["", "영향 경로", "※ Django 구조·ORM 필드 참조·pytest 실행 추적으로 찾은 경로"
+             + (" · ⚠ GitNexus 정적 그래프에 없는 경로" if compared else "")]
+    labels = {"signal": "signal", "orm_field": "ORM 필드", "url": "URL",
+              "runtime_caller": "실행 호출자", "runtime_callee": "실행 피호출자"}
+    for item in shown:
+        marker = " ⚠" if item.static_missed else ""
+        lines.append(f"  • [{labels[item.kind]}] {item.source} → {item.target}{marker}")
+        lines.append(f"      {item.detail} — {item.evidence}")
+    if len(ordered) > len(shown):
+        lines.append(f"  • 그 외 영향 경로 {len(ordered) - len(shown)}건")
+    return lines
 
 
 def _affected_file_section(files: tuple[AffectedFile, ...]) -> list[str]:
