@@ -8,7 +8,8 @@
 
 ## Security Architecture
 
-- Preserve the three-stage credential boundary: `evidence` may execute PR code, `review` may access Codex credentials but no Gitea token, and `comment` may access the Gitea token but never invokes Codex or PR code.
+- Preserve the three-stage credential boundary: `evidence`, `impact`, and `reproduce` may execute PR code, `review` may access Codex credentials but no Gitea token, and `comment` may access the Gitea token but never invokes Codex or PR code.
+- Verdicts come from the fixed runner, never from model output; differential cases compare the PR merge base with head and confirm only at places predicted before execution.
 - Treat PR-head files and diff content as untrusted. Read review policy from the base commit (`base:AI_REVIEW.md`).
 - Bind evidence and review inputs to the exact full head SHA.
 - Keep Codex execution read-only, ephemeral, isolated from user rules/config, and supplied with an allowlisted environment.
@@ -33,12 +34,18 @@
 
 ## Project Structure
 
-- `src/gitea_auto_reviewer/cli.py`: `evidence`, `review`, and `comment` orchestration.
+- `src/gitea_auto_reviewer/cli.py`: orchestration of every pipeline stage (`index` … `comment`).
 - `src/gitea_auto_reviewer/evidence.py`: isolated Django/migration/pytest checks and SHA-bound evidence JSON.
 - `src/gitea_auto_reviewer/git_context.py`: trusted-base policy and base-to-head diff collection; review prompts.
 - `src/gitea_auto_reviewer/codex.py`: credential-filtered, read-only Codex CLI wrapper.
 - `src/gitea_auto_reviewer/review.py`: review schema, validation, grounding, verification, and Markdown rendering.
 - `src/gitea_auto_reviewer/gitea.py`: minimal Gitea issue-comment client with marker-based upsert.
+- `src/gitea_auto_reviewer/gitnexus.py`: GitNexus indexing, Codex MCP config, and a direct STDIO MCP `impact` client.
+- `src/gitea_auto_reviewer/reproduction.py`: reproduction plan/evidence schemas, runner source, assert and differential verdicts.
+- `src/gitea_auto_reviewer/differential.py`: base merge-base worktree, differential availability, and base/head DB-change comparison.
+- `src/gitea_auto_reviewer/impact.py`: changed-function detection, ORM field references, and Django/runtime impact paths vs GitNexus.
+- `src/gitea_auto_reviewer/_capture.py`, `_django_extract.py`, `_trace_plugin.py`: copied to temp dirs and run by the project's CI interpreter; they must not import this package.
+- `tests/fixtures/shop` (base) and `tests/fixtures/shop_head` (head overlay): sample Django app; `tests/shop_fixture.py` builds the two-commit repo.
 - `.gitea/workflows/ai-review.yml`: Windows Gitea Actions reference workflow.
 - `AI_REVIEW.md`: project-specific review policy consumed from the trusted base commit.
 

@@ -4,450 +4,267 @@
 [![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue.svg)](pyproject.toml)
 [![stdlib only](https://img.shields.io/badge/runtime%20deps-stdlib%20only-informational.svg)](pyproject.toml)
 
-**GitNexus가 생성한 의존성 정적 분석 그래프를 Codex와 연동해 변경 영향 경로를
-추적하고, 코드 변경으로 발생할 수 있는 데이터 정합성 문제를 실제 테스트 DB에서
-재현·검증하는 셀프 호스팅 Gitea PR 리뷰 소프트웨어입니다.**
+**Django 프로젝트의 PR이 데이터 정합성을 깨는지, 그리고 그 변경이 어디까지 퍼지는지를
+실제 실행으로 검증하는 셀프 호스팅 Gitea PR 리뷰어입니다.**
 
-대부분의 AI PR 리뷰어는 diff를 읽고 LLM의 의견을 그대로 게시합니다.
-`gitea-auto-reviewer`는 GitNexus의 저장소 의존성 그래프로 변경된 코드의 호출자,
-피호출자 및 관련 프로세스를 추적합니다. 이어서 가능한 발견 사항을 강제 롤백
-트랜잭션 안의 실제 테스트 데이터베이스에서 다시 실행합니다. 재현·검증에 성공한
-항목은 `재현된 문제`, DB 재현을 완료하지 못한 항목은 `재현하지 못한 발견 사항`,
-DB 재현에는 성공했지만 반증 검토를 통과하지 못한 항목은
-`재현 성공 후 2차 검증 미채택`으로 분리해 PR 댓글에 게시합니다. 단일 생성 fixture에서
-관찰되지 않았다는 이유만으로 finding을 삭제하지 않습니다.
+LLM이 diff를 읽고 쓴 의견을 그대로 게시하지 않습니다. 영향 범위는 정적 호출 그래프에
+Django 런타임 구조와 실제 테스트 실행 경로를 더해 찾고, 데이터 정합성 문제는 같은
+시나리오를 **base 코드와 PR head 코드에서 각각 실행해 DB 행 변경을 비교**하는 방식으로
+확인합니다. 판정은 LLM이 아니라 고정된 실행기가 내립니다.
 
-기존 Codex 구독을 셀프 호스팅 Gitea의 풀 리퀘스트 댓글과 연결해 다음 내용을
-검증합니다.
+## 핵심 기능
 
-- 변경으로 데이터의 생성·수정·조회 흐름에 새로운 전제가 생기는지
-- 기존 호출 경로에서 누락값, 경계값 또는 상태 불일치가 발생하는지
-- DB 스키마와 애플리케이션 로직, API, SCM/ERP 연동 사이의 정합성이 유지되는지
-- 변경이 운영 환경에 미칠 수 있는 영향과 사람이 확인해야 할 항목
+| | 무엇을 하는가 | 왜 필요한가 |
+|---|---|---|
+| **영향 경로 분석** | GitNexus 정적 그래프에 Django signal·URL·모델 메타데이터, 문자열 ORM 필드 참조, pytest 호출 추적을 합쳐 변경 함수의 영향 경로를 계산하고, 정적 그래프에 없는 경로를 표시 | `post_save` receiver, `filter(stock__lt=5)` 같은 경로는 호출 관계가 아니라서 호출 그래프에 나타나지 않음 |
+| **base·head 차분 실행** | 같은 재현 시나리오를 base와 head에서 각 2회 실행하고, 롤백 직전의 행 단위 DB 변경·반환값·예외를 비교 | LLM이 "기대값"을 추측하면 판정도 함께 틀림. 기준을 "PR 이전 코드의 실제 동작"으로 고정 |
+| **롤백 전용 재현** | 모든 실행을 `transaction.atomic()` 안에서 강제 롤백하고, 새 연결로 쓰기가 일어난 모든 테이블이 원상태인지 검사 | 실제 테스트 DB를 쓰면서도 데이터를 남기지 않음 |
+| **단계별 자격 증명 분리** | PR 코드 실행, Codex 리뷰, Gitea 댓글 작성을 서로 다른 프로세스와 자격 증명으로 분리하고 모든 입력을 head SHA에 고정 | 리뷰 대상 코드가 리뷰어의 토큰이나 정책을 건드리지 못하게 함 |
 
-OpenAI API 키나 Copilot 라이선스는 필요하지 않습니다. 이 도구는 AI가 지원하는 1차
-리뷰어이지 병합 게이트가 아닙니다. 일반 PR 댓글 하나를 생성하거나 업데이트할 수
-있지만 승인, 변경 요청, 병합, 커밋 푸시 또는 브랜치 보호 규칙 변경은 할 수 없습니다.
+## 리뷰 댓글 예시
 
-## 리뷰 및 재현 흐름
+[`tests/fixtures/shop`](tests/fixtures/shop)의 예제 앱에서 "주문 수량이 재고보다 많으면
+거절하는 검사"를 제거한 PR을 CLI로 끝까지 실행한 결과입니다. 재현 계획과 2차 검증
+JSON은 Codex 대신 손으로 작성해 넣었고, 나머지 증거 수집·영향 분석·재현·판정 단계는
+실제 Django, SQLite, GitNexus에서 실행됐습니다.
 
 ```text
-PR head ── 기존 Windows 테스트 러너
-              ├─ 정확한 head SHA에서 GitNexus 분석
-              ├─ Django 검사
-              ├─ 마이그레이션 검사
-              ├─ pytest
-              └─ head SHA에 연결된 evidence.json
-                          │
-신뢰할 수 있는 base 워크플로의 pull_request_target
-              │
-              ├─ 동일 저장소 PR인지 확인
-              ├─ 읽기 전용 검사를 위해 PR head 체크아웃
-              ├─ base 객체 가져오기(PR 코드 실행 안 함)
-              ├─ git diff base...head
-              └─ base:AI_REVIEW.md 읽기
-                          │
-                     리뷰 프로세스
-                     Codex 인증: 있음
-                     Gitea 토큰: 없음
-                     샌드박스: 읽기 전용
-                     GitNexus MCP: 있음
-                          │
-                 candidate-review.json
-                          │
-                 Codex 재현 계획(medium)
-                 후보가 없으면 Codex 호출 생략
-                          │
-               Django view/ORM 직접 호출
-               테스트 DB + transaction.atomic()
-               변경 근거 Python 라인 실행 추적
-               expected/observed 고정 판정
-               강제 롤백 + 정리 상태 검사
-               선택적 자연 데이터 조건 집계
-               불확실하면 스크립트 자동수정 후 1회 재실행
-                          │
-                Codex 반증 단계(low)
-                재현 증거 읽기
-                          │
-                 검증 결과에 따라 분류
-                 ├─ 재현·검증 성공: 재현된 문제
-                 ├─ 미실행/불확실/미재현: 재현하지 못한 발견 사항
-                 └─ 재현 성공·검증 거절: 사유를 붙인 2차 검증 미채택
-                     review.json
-                          │
-                     댓글 프로세스
-                     Codex 인증: 사용 안 함
-                     Gitea 토큰: 있음
-                          │
-                  PR 댓글 생성/업데이트
-                  같은 SHA의 재현 결과 보존
+재현된 문제
+  • 재고보다 많은 주문이 승인되어 Product.stock이 음수가 됨
+    영향: 재고 수량이 실제 보유량과 달라지고 초과 주문이 생성됨
+    재현에 사용한 조건
+      1. 보유 재고보다 많은 수량으로 기존 상품 주문
+    base·head 차분 실행 (각 2회, 실행마다 달라지는 값 제외)
+      Product(pk=1).stock  base 변경 없음 · head 1 → -2
+    그 밖의 base 대비 차이
+      예외  base OutOfStock: widget · head 없음
+      반환값  base 없음 · head {"quantity": 3}
+      Order 생성  base 0건 · head 1건 (product_id=1, quantity=3, status="placed")
+      OrderLog 생성  base 0건 · head 1건 (order_id=<new:Order#1>, message="ordered 3")
+    실행 도달: shop/services.py:12
+    롤백 검증: 통과
+
+영향 경로
+※ Django 구조·ORM 필드 참조·pytest 실행 추적으로 찾은 경로 · ⚠ GitNexus 정적 그래프에 없는 경로
+  • [ORM 필드] shop/services.py:place_order → shop/reports.py:low_stock_products ⚠
+      Product.stock 읽기 — shop/reports.py:9
+  • [ORM 필드] shop/services.py:place_order → shop/reports.py:placed_quantities ⚠
+      Order.quantity 읽기 — shop/reports.py:5
+  • [signal] shop/services.py:place_order → shop/signals.py:log_order ⚠
+      Order post_save · pytest 실행으로 확인 — shop/signals.py:7
+  • [실행 호출자] shop/views.py:order_view → shop/services.py:place_order
+      실행 체인 진입점 shop/orders_spec.py:test_order_view_logs_order_and_decrements_stock
 ```
 
-### 최초 FINDING: Codex + GitNexus 정적 분석
+GitNexus는 `order_view → place_order` 호출은 찾았지만, 재고를 읽는 보고서 함수 두 개와
+주문 생성 시 실행되는 signal receiver는 찾지 못했습니다. 댓글 상단에는 변경 파일, DB
+스키마·데이터 처리 변경, Django check·마이그레이션·pytest 결과, 위험도가 함께 표시됩니다.
 
-최초 FINDING 단계는 재현 단계가 아니라 읽기 전용 정적 분석입니다. Codex는 다음
-입력을 함께 사용해 PR이 새로 만들거나 악화한 문제 후보를 찾습니다.
+## 파이프라인
 
-- `base...head` 전체 diff와 PR head의 전체 저장소
-- GitNexus가 인덱싱한 심볼, 호출자, 피호출자 및 관련 프로세스 그래프
-- head SHA에 연결된 Django, 마이그레이션 및 pytest 결과
-- base 커밋의 신뢰된 `AI_REVIEW.md` 정책
-
-프로그램은 Codex CLI를 JSONL 이벤트 모드로 실행하고, 초안 생성을 완료하기 전에
-GitNexus의 다음 도구가 실제로 성공했는지 검사합니다.
-
-- `detect_changes`: 전체 변경 심볼 탐지
-- `context`: 변경 심볼의 정의와 관계 확인
-- `impact`: 직접·간접 영향 경로 확인
-
-세 호출 중 하나라도 완료되지 않으면 리뷰를 실패시키며 조용히 빈 FINDING으로
-처리하지 않습니다. 실행 경로가 불명확할 때 사용하는 `trace`는 선택 항목입니다.
-
-Codex는 변경 전후 조건과 경계값을 비교하고, 새로 허용된 상태가 데이터 생성·수정·
-삭제·분할·계산 및 MES/SCM/ERP 경로로 전달되는지 추적합니다. FINDING은 `bug`,
-`security`, `performance`, `dependency`, `policy` 범주로 최대 5개까지 생성할 수
-있습니다. 모든 FINDING은 구체적인 운영 영향과 실제 `file:line` 근거가 필요하며,
-프로그램은 해당 파일과 줄 및 정책 인용이 실제로 존재하는지 검증합니다.
-
-이 단계에서는 프로젝트 코드나 테스트를 실행하지 않습니다. 생성된 후보는 이후
-`plan → reproduce → verify → finalize` 단계에서 `재현된 문제`, `재현하지 못한 발견
-사항`, `재현 성공 후 2차 검증 미채택`으로 분류됩니다.
-
-CLI 단계는 하나의 Windows 작업에서 순차적으로 실행됩니다.
-
-```bash
-gitea-auto-reviewer index ...     # PR head 코드 그래프 생성/업데이트
-gitea-auto-reviewer evidence ...  # 신뢰된 내부 PR 실행 및 증거 수집
-gitea-auto-reviewer review ...    # Codex 리뷰, Gitea 자격 증명 없음
-gitea-auto-reviewer plan ...      # 재현 가능한 발견 사항의 재현 계획 수립
-gitea-auto-reviewer reproduce ... # DB 롤백 실행, 불확실한 스크립트 자동수정·1회 재실행
-gitea-auto-reviewer verify ...    # Codex가 재현 결과 반증 시도
-gitea-auto-reviewer finalize ...  # 확인되고 정리 검증을 통과한 결과만 유지
-gitea-auto-reviewer comment ...   # Gitea 댓글 작성, Codex나 PR 코드 실행 안 함
+```text
+PR head (SHA 고정)
+ │
+ ├─ index      GitNexus로 정확한 head SHA 인덱싱
+ ├─ evidence   Django check · migration check · pytest (+ 변경 함수 호출 추적)
+ ├─ impact     Django 구조 · ORM 필드 참조 · 실행 추적 → GitNexus와 비교
+ │                                   ── 여기까지 PR 코드 실행, 자격 증명 없음 ──
+ ├─ review     Codex + GitNexus MCP 1차 분석 (읽기 전용 샌드박스, Gitea 토큰 없음)
+ ├─ plan       Codex가 finding별 재현 시나리오 작성 (차분 / 단정 모드)
+ ├─ reproduce  base worktree와 head에서 롤백 실행 → 고정 실행기가 판정
+ ├─ verify     Codex 반증 단계: 확정 항목을 채택하거나 사유와 함께 거절만 가능
+ ├─ finalize   재현 결과에 따라 게시 분류
+ └─ comment    Gitea 댓글 생성/갱신 (Codex·PR 코드 실행 없음, Gitea 토큰만 보유)
 ```
 
-Codex 자식 프로세스에는 러너의 전체 환경 대신 허용 목록의 환경 변수만 전달됩니다.
-PR head 저장소에서 `--sandbox read-only`, `--ephemeral`,
-`--ignore-user-config`, `--ignore-rules`로 실행되며, 전체 저장소를 읽어 변경이
-호출자, serializer, 연동, 배포 파일 및 테스트로 어떻게 이어지는지 추적합니다.
-프롬프트는 `AGENTS.md`를 포함한 모든 저장소 파일을 신뢰할 수 없는 데이터로 취급하고
-프로젝트 코드 실행을 금지합니다.
+모든 단계는 [`.gitea/workflows/ai-review.yml`](.gitea/workflows/ai-review.yml)에서 하나의
+전용 Windows 러너 작업으로 순차 실행됩니다.
 
-`read-only`는 저장소 쓰기를 막지만 운영체제 수준에서 프로세스 실행까지 차단하지는
-않습니다. 프로세스를 절대 실행할 수 없는 경계가 필요하다면 저장소를 읽기 전용으로
-마운트한 별도 강화 샌드박스에서 리뷰 단계를 실행해야 합니다.
+### 1. 영향 경로 분석 (`impact`)
 
-## 지원 범위와 신뢰 모델
+변경된 함수는 `git diff -U0 base head`의 hunk를 AST 함수 범위에 대응시켜 Python
+qualname 단위로 찾습니다. 그다음 세 출처에서 경로를 모읍니다.
 
-v0.2는 다음 환경만 지원합니다.
+| 출처 | 수집 방법 | 찾는 경로 |
+|---|---|---|
+| Django 구조 | 프로젝트 인터프리터로 `django.setup()` 후 앱 레지스트리를 읽음 | 변경 함수가 쓰는 모델의 `pre_/post_save`·`delete` receiver, receiver를 트리거하는 모든 쓰기 위치, 변경된 view의 URL 진입점 |
+| ORM 필드 참조 | AST에서 `Model.objects…` 체인의 `filter/values/update/create`, `F()`, `Q()` 인자를 모델 필드로 해석 | 변경 함수가 쓰는 필드를 읽거나 쓰는 다른 함수, 정의가 바뀐 필드를 참조하는 모든 함수 |
+| 실행 추적 | 기존 pytest 실행에 플러그인을 로드해 `sys.setprofile`로 변경 함수 진입 시 호출 스택 기록 | 실제로 변경 함수를 호출한 경로와 테스트, 변경 함수 실행 중 호출된 프로젝트 함수 |
 
-- 신뢰할 수 있는 영구 셀프 호스팅 러너
-- 비공개 또는 내부 저장소
-- head와 base가 같은 저장소에 속한 PR
+같은 경로가 Django 구조와 실행 추적 양쪽에서 나오면 하나로 합치고
+`pytest 실행으로 확인`을 붙입니다. 마지막으로 GitNexus MCP 서버를 직접 STDIO로 호출해
+변경 함수마다 upstream/downstream `impact`를 조회하고, 그 결과에 없는 경로에 ⚠를
+표시합니다. 결과는 Codex 1차 리뷰 프롬프트에 결정론적 증거로 들어가고, 댓글의
+`영향 경로` 섹션에 그대로 렌더링됩니다.
+
+### 2. 1차 리뷰 (`review`)
+
+Codex는 diff, 전체 head 저장소, GitNexus 그래프, CI 증거, 영향 경로, base 커밋의
+`AI_REVIEW.md` 정책을 함께 읽고 finding 후보를 최대 5개 만듭니다. 프로그램은 GitNexus
+`detect_changes`·`context`·`impact` 호출이 실제로 완료됐는지 JSONL 이벤트로 검사하고,
+모든 `file:line` 근거와 정책 인용이 실제로 존재하는지 검증합니다. 변경 파일 수, CI
+결과, 영향 경로는 모델 출력을 덮어쓰는 고정 필드입니다.
+
+### 3. 재현과 판정 (`plan` → `reproduce`)
+
+Codex는 재현 시나리오(`def reproduce():` 하나만 있는 스크립트)와 판정 방식을 제안할 뿐,
+결과를 판정하지 않습니다. 스크립트는 AST 검사로 파일·프로세스·네트워크 접근과 트랜잭션
+조작을 차단한 뒤 실행합니다.
+
+**차분 모드 (`differential`)** — 데이터 정합성 finding의 기본값입니다.
+
+1. PR의 merge base(리뷰 단계의 `base...head` diff와 같은 기준)를 임시 `git worktree`로
+   꺼냅니다. base 브랜치가 그 뒤에 움직였어도 PR 자체의 변경만 비교합니다.
+2. head와 base에서 같은 스크립트를 각 2회 실행합니다. 각 실행은 외부 `atomic` 안에서
+   SQL execute wrapper를 설치해, 테이블에 처음 쓰기가 일어나는 순간 해당 테이블을
+   스냅샷합니다. 시나리오가 끝나면 롤백 직전에 생성·수정·삭제된 행을 계산합니다.
+3. 비교 전에 실행마다 달라지는 값을 정규화합니다.
+   - 새로 생성된 행의 pk는 제거합니다. PostgreSQL 시퀀스는 롤백되지 않기 때문입니다.
+   - 새 행을 가리키는 FK는 `<new:Order#1>`처럼 생성 순서로 바꿉니다.
+   - `auto_now`·`auto_now_add` 값은 제외합니다.
+   - 같은 쪽의 두 실행끼리 값이 다른 항목(uuid, 현재 시각 등)은 비교에서 뺍니다.
+4. 판정 규칙은 다음과 같습니다.
+
+| 관찰 | 판정 |
+|---|---|
+| base와 head의 DB 변경·반환값·예외가 모두 같음 | `refuted` — PR이 만든 문제가 아님 |
+| finding이 예측한 위치(`Product.stock`, `result`, `exception` 등)에서 차이 | `confirmed` |
+| 예측하지 않은 위치에서만 차이 | `refuted` — 관찰된 차이를 사유로 남김 |
+| head에서 변경 근거 코드 미도달, base에 진입점 없음, 실행 오류 | `inconclusive` |
+
+예측 위치는 실행 전에 plan 단계에서 고정합니다. 실행 후 관찰된 차이에 맞춰 판정을
+바꿀 수 없습니다. 마이그레이션이나 의존성 파일(`requirements*.txt`, `pyproject.toml`
+등)이 바뀐 PR은 같은 테스트 DB와 venv로 base를 실행할 수 없으므로, 그 사유를 plan
+프롬프트에 전달하고 단정 모드로 전환합니다.
+
+**단정 모드 (`assert`)** — base와의 동작 차이로 관찰할 수 없는 finding에 씁니다.
+스크립트가 돌려준 `expected`와 `observed`를 실행기가 비교합니다.
+
+두 모드 모두 finding의 Python 근거 라인(±3줄)이 실제로 실행됐는지 `sys.settrace`로
+확인합니다. 판정 전에 실패한 스크립트는 오류 증거와 함께 Codex에 돌려보내 한 번만
+자동 수정 후 재실행합니다. 가능한 경우 롤백 전 원본 데이터에서
+`버그 조건 충족률: 포장 투입 버킷 467/2,481건 (18.82%)` 같은 비율도 집계합니다.
+이 비율은 정보 제공용이며 판정에는 쓰지 않습니다.
+
+### 4. 반증과 게시 (`verify` → `finalize` → `comment`)
+
+독립된 Codex 단계가 확정된 항목을 반증하려 시도합니다. 이 단계는 항목을 채택하거나
+구체적인 한국어 사유와 함께 거절할 수만 있고, 항목을 추가하거나 고쳐 쓸 수는 없습니다.
+최종 댓글은 다음과 같이 나뉩니다.
+
+- `재현된 문제`: 코드 도달, 차이 관찰, 롤백 검증, 반증 단계를 모두 통과한 항목
+- `재현하지 못한 발견 사항`: 미실행, 실행 불확정, 실행상 미재현 항목 (사유 포함)
+- `재현 성공 후 2차 검증 미채택`: 재현은 됐지만 반증 단계에서 거절된 항목 (사유 포함)
+
+정적 분석 단계에서 나온 finding은 재현에 실패했다는 이유만으로 삭제하지 않습니다.
+댓글은 `<!-- gitea-auto-reviewer:pr=42:sha=… -->` 마커로 찾아 갱신하고, 같은 SHA에서
+다시 실행하면 이전에 재현된 항목을 보존합니다.
+
+## 신뢰 모델
+
+v0.3은 다음 환경만 지원합니다.
+
+- 신뢰할 수 있는 전용 셀프 호스팅 러너
+- 비공개 또는 내부 저장소의 같은 저장소 PR (fork PR 미지원)
 - 사전에 설치하고 감사한 이 패키지 버전
-- 일반 Markdown 타임라인 댓글
-- 기본 최대 10MB 크기의 diff
 
-PR 코드는 증거 수집 프로세스에서만 실행됩니다. Codex에는 테스트, 빌드,
-마이그레이션, 패키지 관리자 또는 프로젝트 스크립트 실행을 요청하지 않습니다. 검사
-프로세스에는 허용 목록 환경과 임시 HOME이 제공되므로 Gitea 자격 증명,
-`CODEX_HOME` 및 관련 없는 러너 비밀 정보가 상속되지 않습니다.
+| 단계 | PR 코드 실행 | Codex 인증 | Gitea 토큰 |
+|---|---|---|---|
+| `evidence`, `impact`, `reproduce` | 예 (허용 목록 환경 변수, 임시 HOME) | 없음 | 없음 |
+| `review`, `plan`, `verify` | 아니요 (`--sandbox read-only`, `--ephemeral`) | 있음 | 없음 |
+| `comment` | 아니요 | 없음 | 있음 |
 
-이는 프로세스 분리일 뿐 계정 또는 VM 격리는 아닙니다. fork PR이나 신뢰할 수 없는
-공개 저장소에는 사용하지 마세요.
+- 리뷰 정책은 PR이 아니라 base 커밋의 `AI_REVIEW.md`에서 읽습니다. PR이 자기 리뷰 지침을
+  바꿀 수 없습니다.
+- 저장소 파일(`AGENTS.md` 포함), diff, CI 출력은 모두 지시가 아닌 데이터로 취급합니다.
+- 차분 실행의 base 쪽은 이미 병합된 신뢰된 커밋이라 보안 경계를 넓히지 않습니다.
+- pytest 호출 추적 플러그인은 PR 코드와 같은 프로세스에서 돌기 때문에, 그 결과는
+  pytest 결과와 같은 신뢰 수준으로 취급합니다.
+- 이것은 프로세스 분리이지 VM 격리가 아닙니다. 신뢰할 수 없는 공개 저장소에는 쓰지
+  마세요. `read-only` 샌드박스는 저장소 쓰기를 막지만 OS 수준의 프로세스 실행까지 막지는
+  않습니다.
 
-## 요구 사항
+## 설치와 설정
 
-- Python 3.11 이상
-- Git
-- `--output-schema`와 `exec --json`을 지원하는 Codex CLI
-- GitNexus CLI
-- `ai-review-windows` 라벨이 지정된 전용 Windows Gitea 러너
-- Codex를 사용할 수 있는 ChatGPT 계정
-- PR/이슈 댓글을 읽고 쓸 수 있는 Gitea 토큰
+요구 사항: Python 3.11+, Git, `exec --json`과 `--output-schema`를 지원하는 Codex CLI,
+GitNexus CLI, `ai-review-windows` 라벨이 붙은 전용 Gitea 러너.
 
-## 러너에 설치하기
+1. 러너 서비스 계정에 감사가 끝난 버전을 설치합니다. PR 체크아웃에서 `pip install .`을
+   실행하지 마세요. 빌드 훅도 실행 가능한 코드입니다.
 
-기존 러너 서비스 계정에 감사가 끝난 릴리스를 설치합니다. 풀 리퀘스트에서 실행하지
-말고 러너를 프로비저닝할 때 실행하세요.
+   ```bash
+   git clone https://github.com/hyunsuhahaha/gitea-auto-reviewer.git
+   python -m pip install ./gitea-auto-reviewer uv
+   npm install -g gitnexus
+   ```
 
-```bash
-python -m pip install "gitea-auto-reviewer==0.2.1"
-```
+2. 같은 OS 계정으로 Codex에 한 번 로그인합니다. **Sign in with ChatGPT**를 선택하면
+   `OPENAI_API_KEY` 없이 ChatGPT 계정의 Codex 권한을 사용합니다.
 
-패키지를 배포하기 전 개발 환경에서는 다음과 같이 설치합니다.
+   ```bash
+   codex login
+   ```
 
-```bash
-git clone https://github.com/hyunsuhahaha/gitea-auto-reviewer.git
-cd gitea-auto-reviewer
-python -m pip install .
-python -m pip install uv
-```
-
-GitNexus는 전용 러너 계정으로 한 번만 설치합니다.
-
-```powershell
-npm install -g gitnexus
-gitnexus --version
-```
-
-신뢰할 수 없는 PR 체크아웃에서 `pip install .`을 실행하지 마세요. Python 빌드 훅은
-실행 가능한 코드입니다.
-
-## API 키 없이 Codex 인증하기
-
-Windows 러너를 실행하는 OS 계정으로 한 번 로그인합니다.
-
-```bash
-codex login
-codex login status
-```
-
-**Sign in with ChatGPT**를 선택하세요. CLI가 세션을 캐시하고 해당 ChatGPT 계정의
-Codex 사용 권한을 이용합니다. `OPENAI_API_KEY`는 읽거나 요구하지 않습니다. 캐시된
-로그인이 만료되거나 취소되면 `codex login`을 다시 실행해야 합니다. 자세한 내용은
-[Codex 인증 문서](https://learn.chatgpt.com/docs/auth)를 참고하세요.
-
-## Gitea 설정하기
-
-1. 전용 Gitea 봇 또는 서비스 계정을 생성합니다.
-2. 토큰에는 이슈/PR 댓글 조회·생성·수정 권한만 부여합니다. 병합 또는 관리자 권한은
-   부여하지 마세요.
-3. 토큰을 저장소 또는 조직 Actions 비밀 정보 `AI_REVIEW_GITEA_TOKEN`으로
-   저장합니다.
+3. Gitea에 전용 봇 계정을 만들고, 이슈/PR 댓글 조회·작성·수정 권한만 가진 토큰을
+   `AI_REVIEW_GITEA_TOKEN` Actions 비밀 정보로 저장합니다.
 4. [`.gitea/workflows/ai-review.yml`](.gitea/workflows/ai-review.yml)을 리뷰 대상
-   저장소의 신뢰할 수 있는 base 브랜치에 복사합니다.
-5. 영구 리뷰어 가상 환경에 `uv`를 설치합니다. 각 PR은 새 `.venv-ci`를 사용하며,
-   uv는 Windows 패키지 캐시를 재사용합니다.
-6. 전용 러너 계정에서 `gitea-auto-reviewer`, `codex`, `gitnexus`를 사용할 수 있고
-   러너에 `ai-review-windows` 라벨이 지정되어 있는지 확인합니다.
+   저장소의 base 브랜치에 복사합니다. 워크플로는 `pull_request_target`으로 base의
+   정의를 사용하고, 각 PR마다 새 `.venv-ci`를 만듭니다.
+5. 재현용 테스트 DB 연결은 저장소에 추적되는 설정 파일이나 허용 목록 환경 변수로
+   지정합니다. base worktree에는 추적되지 않는 로컬 설정 파일이 없습니다.
 
-예제는 워크플로 정의를 신뢰할 수 있는 base 브랜치에서 가져오도록
-`pull_request_target`을 사용합니다. 동일 저장소 PR인지 확인한 뒤 새 CI 환경에서
-결정론적 검사를 실행하고, Codex는 읽기 전용이자 자격 증명 없이 실행합니다.
+Actions 변수 `AI_REVIEW_FIRST_PASS_EFFORT`, `AI_REVIEW_PLAN_EFFORT`(기본 `medium`),
+`AI_REVIEW_VERIFY_EFFORT`(기본 `low`)로 Codex 추론 수준을 바꿀 수 있습니다. 기존 PR이나
+병합된 PR은 Actions 화면의 `workflow_dispatch`에 PR 번호만 넣어 다시 리뷰할 수 있습니다.
 
 ## CLI
 
-리뷰 전에 체크아웃된 PR head를 인덱싱합니다. 실제 `HEAD`가 전달된 SHA와 다르면
-명령이 실행을 거부합니다.
+| 명령 | 역할 | 주요 옵션 |
+|---|---|---|
+| `metadata` | Gitea에서 PR 번호·제목·base/head SHA 조회 | `--pr`, `--output-file` |
+| `index` | head SHA를 GitNexus로 인덱싱 | `--head-sha` |
+| `evidence` | Django check, migration check, pytest 실행 | `--only`, `--trace-output` |
+| `evidence-merge` | 단계별 증거를 하나로 합침 | `--input` (반복) |
+| `impact` | 영향 경로 계산과 GitNexus 비교 | `--runtime-trace`, `--skip-gitnexus` |
+| `review` | Codex 1차 리뷰 | `--evidence-file`, `--impact-file` |
+| `plan` | 재현 시나리오 계획 | `--base-sha` (없으면 단정 모드만) |
+| `reproduce` | 롤백 재현과 판정 | `--base-sha`, `--require-setting NAME=value` |
+| `verify` | 반증 단계 | `--reproduction-file` |
+| `finalize` | 게시 분류 확정 | `--verification-file` |
+| `comment` | Gitea 댓글 생성/갱신 | 토큰은 `GITEA_REVIEW_TOKEN` 환경 변수로만 |
+| `reasoning` | 적용 중인 추론 수준 출력 | |
 
-```powershell
-gitea-auto-reviewer index `
-  --head-sha 2222222222222222222222222222222222222222 `
-  --repo-dir C:\runner\work\payments `
-  --gitnexus-binary C:\Users\GiteaAIReview\AppData\Roaming\npm\gitnexus.cmd
-```
-
-결정론적 증거를 수집합니다.
-
-```powershell
-gitea-auto-reviewer evidence `
-  --head-sha 2222222222222222222222222222222222222222 `
-  --repo-dir C:\runner\work\payments `
-  --output C:\runner\temp\evidence.json
-```
-
-이 명령은 `python manage.py check`, `python manage.py makemigrations --check
---dry-run`, `python -m pytest -q -p no:cacheprovider`를 실행합니다. 실행 전에 실제
-`HEAD`가 `--head-sha`와 같은지 확인하고 해당 SHA를 증거 문서에 기록합니다.
-
-예제 워크플로는 세 검사를 별도 Actions 단계로 실행한 뒤 SHA에 연결된 JSON 파일을
-`evidence-merge`로 합칩니다. 첫 Codex 단계와 재현 계획은 medium 추론 수준을,
-독립적인 반증 단계는 low 수준을 사용합니다. 후보가 없으면 재현 계획 호출을
-생략합니다.
-
-다음 Gitea Actions 저장소 변수로 기본값을 바꿀 수 있습니다.
-
-- `AI_REVIEW_FIRST_PASS_EFFORT` (기본값: `medium`)
-- `AI_REVIEW_PLAN_EFFORT` (기본값: `medium`)
-- `AI_REVIEW_VERIFY_EFFORT` (기본값: `low`)
-
-개별 호출은 `--reasoning-effort`로 재정의할 수 있습니다.
-`gitea-auto-reviewer reasoning`은 적용되는 설정을 출력합니다.
-
-구조화된 리뷰를 생성합니다.
-
-```bash
-gitea-auto-reviewer review \
-  --repository acme/payments \
-  --head-repository acme/payments \
-  --pr 42 \
-  --pr-title "상품 비고 기능 추가" \
-  --base-sha 1111111111111111111111111111111111111111 \
-  --head-sha 2222222222222222222222222222222222222222 \
-  --repo-dir /runner/work/payments \
-  --evidence-file /runner/temp/evidence.json \
-  --gitnexus-binary gitnexus \
-  --output /runner/temp/review.json
-```
-
-두 Codex 단계는 같은 GitNexus STDIO MCP 서버를 사용합니다. 변경된 심볼, 컨텍스트,
-영향 및 관련 프로세스를 조회하며, 정적 변경 영향 증거를 실제 저장소 파일과 결정론적
-CI 증거에 대조합니다.
-
-게시 전에 롤백 전용 재현을 생성하고 실행합니다.
-
-```powershell
-gitea-auto-reviewer plan `
-  --head-sha 2222222222222222222222222222222222222222 `
-  --review-file C:\runner\temp\candidate-review.json `
-  --output C:\runner\temp\reproduction-plan.json
-
-gitea-auto-reviewer reproduce `
-  --head-sha 2222222222222222222222222222222222222222 `
-  --plan-file C:\runner\temp\reproduction-plan.json `
-  --python .\.venv-ci\Scripts\python.exe `
-  --require-setting ERP_LIVE_SEND=false `
-  --require-setting MAIN_APP_RUN=false `
-  --output C:\runner\temp\reproduction-evidence.json
-
-gitea-auto-reviewer verify `
-  --head-sha 2222222222222222222222222222222222222222 `
-  --review-file C:\runner\temp\candidate-review.json `
-  --reproduction-file C:\runner\temp\reproduction-evidence.json `
-  --output C:\runner\temp\verification.json
-
-gitea-auto-reviewer finalize `
-  --head-sha 2222222222222222222222222222222222222222 `
-  --review-file C:\runner\temp\candidate-review.json `
-  --reproduction-file C:\runner\temp\reproduction-evidence.json `
-  --verification-file C:\runner\temp\verification.json `
-  --output C:\runner\temp\review.json
-```
-
-Codex는 재현 조건, 실행 코드, 정확히 비교 가능한 `expected`와 `observed`만 제안하며
-`confirmed` 여부를 결정하지 않습니다. 고정 실행기는 Django를 초기화하고 필수 런타임
-설정을 확인한 뒤 모든 Django DB에서 `transaction.atomic()`을 열고, finding의 Python
-근거 라인 주변이 실제 실행됐는지 추적합니다. 실행 도달이 확인된 상태에서
-`expected != observed`이면 `confirmed`, 같으면 `refuted`로 판정합니다. 근거 코드에
-도달하지 못했거나 비교값이 없으면 판정하지 않고 `inconclusive`로 처리합니다.
-
-실행 후 DB를 강제로 롤백하고 연결을 닫은 다음 새 연결에서 행과 필드를 다시 검사합니다.
-변경 근거 도달, 불일치 관찰 및 정리 검증을 모두 통과한 결과만 `재현된 문제`에
-표시됩니다. 재현 계획 제외, 시간 초과·예외, 코드 미도달, 정리 미검증 사례는
-`재현하지 못한 발견 사항`에 실행 사유와 함께 남습니다. 재현 성공 후 반증 검토에서
-거절된 항목은 `재현 성공 후 2차 검증 미채택`에 구체적인
-미채택 사유와 함께 남습니다. 2차 검증기가 confirmed 항목을 채택하지 않으면서 사유를
-누락하면 검증 JSON을 거부합니다. PostgreSQL
-시퀀스는 트랜잭션 대상이 아니므로 값에 빈 구간이 생길 수 있습니다.
-
-fixture, timezone 또는 설정 오류로 판정 전에 종료된 재현 스크립트는 오류 증거를 Codex에
-돌려보내 한 번 자동 수정·재실행합니다. 두 번째 실행도 실패하면 그 사유를 그대로 표시합니다.
-
-재현 사례 수에는 제한이 없습니다. 가능한 경우 실제 ORM 모집단을 집계해
-`버그 조건 충족률: 포장 투입 버킷 467/2,481건 (18.82%)`과 같은 비율도 표시합니다.
-이 수치는 정보 제공용이며 게시 여부를 결정하지 않습니다.
-
-봇 댓글을 게시하거나 업데이트합니다.
-
-```bash
-export GITEA_REVIEW_TOKEN='stored-by-the-runner-secret-manager'
-gitea-auto-reviewer comment \
-  --gitea-url https://gitea.example.com \
-  --repository acme/payments \
-  --pr 42 \
-  --pr-title "상품 비고 기능 추가" \
-  --head-sha 2222222222222222222222222222222222222222 \
-  --review-file /runner/temp/review.json
-```
-
-같은 값은 `GITEA_REPOSITORY`, `GITEA_HEAD_REPOSITORY`, `GITEA_PR_NUMBER`,
-`GITEA_PR_TITLE`, `GITEA_BASE_SHA`, `GITEA_HEAD_SHA`, `GITEA_URL`,
-`GITEA_REVIEW_TOKEN`으로 전달할 수도 있습니다. 토큰은 프로세스 목록이나 셸 기록에
-나타나지 않도록 환경 변수로만 받습니다.
-
-### 기존 PR 또는 병합된 PR을 수동으로 리뷰하기
-
-예제 워크플로는 `workflow_dispatch`도 지원합니다. Actions 페이지에서 **Codex AI
-review**와 **Run workflow**를 선택하고 기존 PR 번호만 입력하세요. Gitea에서 원래
-제목과 SHA를 읽어 같은 리뷰 단계를 실행하므로 PR을 다시 열거나 테스트 커밋을 만들지
-않아도 됩니다. 원래 head 커밋은 Gitea 저장소에 남아 있어야 합니다.
-
-중간 JSON 파일은 마지막 `always()` 단계에서
-`C:\gitea\ai-review\debug-runs\<GITHUB_RUN_ID>`에 복사됩니다.
-
-## 변경 영향 형식
-
-PR 댓글에는 검증된 사실, 주요 변경, 재현된 문제 및 영향 파일을 간결하게 표시합니다.
-
-```text
-변경 파일        7개
-DB 스키마 변경   있음
-데이터 처리 변경 있음
-API Contract     변경
-외부연동         영향 가능
-
-검증된 사실
-✅ Django check PASS
-✅ Migration check 누락 없음
-✅ 테스트(pytest) 147/147 PASS
-
-위험도           🟠 HIGH · 근거 HIGH
-
-재현된 문제
-• 기존 Product 생성 경로가 remark를 전달하지 않아 생성 요청이 실패함
-  영향: 기존 상품 등록 경로에서 상품 생성이 중단됨
-  버그 조건 충족률: 기존 상품 생성 경로 4/12건 (33.33%)
-  관찰 결과: 필수 필드 오류 응답 확인
-  롤백 검증: 통과
-  └ product/models.py:31
-  └ product/services.py:18
-```
-
-변경 파일 수와 경로는 Git에서 가져오고 Django, 마이그레이션 및 pytest 결과는 증거
-문서에서 가져와 모델 출력을 덮어씁니다. `head_sha`가 PR head와 정확히 일치하지 않는
-증거는 거부합니다. 숨겨진 마커로 기존 댓글을 업데이트합니다.
-
-```html
-<!-- gitea-auto-reviewer:pr=42:sha=abc123... -->
-```
-
-같은 PR head SHA를 다시 실행하면 이전에 재현된 발견 사항을 새 결과와 병합합니다.
-다른 SHA는 새 결과 집합을 시작합니다.
-
-구체적인 버그, 보안, 성능, 의존성 문제 및 명시적인 base 정책 위반만 게시합니다.
-스타일, 이름 짓기 및 일반적인 개선 의견은 제외합니다. 각 항목의 파일, 줄 범위와 정책
-인용을 검증하며 결정론적 CI 사실을 우선합니다. 독립적인 두 번째 Codex 단계는 재현된
-발견 사항을 그대로 유지하거나 삭제할 수만 있고 추가하거나 다시 쓸 수 없습니다.
-
-`영향 파일`에는 GitNexus로 관계가 확인된 미변경 파일을 최대 5개까지 표시합니다.
-변경된 파일, 일반 유틸리티, import로만 연결된 항목 및 검증되지 않은 관계는
-제외합니다.
-
-## 프로젝트 정책
-
-기본 브랜치의 `AI_REVIEW.md`에 운영 위험과 도메인별 리뷰 우선순위를 정의할 수
-있습니다. 리뷰어는 항상 PR의 **base 커밋**에서 이 파일을 읽습니다.
-
-```text
-base 커밋의 AI_REVIEW.md   -> 현재 리뷰 정책
-PR에서 변경한 AI_REVIEW.md -> 이번 리뷰에서는 무시
-병합된 AI_REVIEW.md         -> 이후 PR부터 적용
-```
-
-따라서 PR이 자기 자신을 리뷰하는 지침을 바꿀 수 없습니다.
-
-## 증거 경계와 향후 입력
-
-컨텍스트에는 읽기 전용 저장소, GitNexus 코드 그래프, diff, base 정책 및 격리된
-CI에서 가져온 SHA 연결 증거가 포함됩니다. v0.2는 Django 검사, 마이그레이션 검사,
-pytest를 지원합니다. 향후 정규화된 Ruff와 Semgrep 결과를 추가할 수 있습니다.
+저장소를 읽거나 실행하는 명령(`index`, `evidence`, `impact`, `review`, `reproduce`)은 실제
+`HEAD`가 `--head-sha`와 다르면 실행을 거부합니다. 단계 사이의 JSON은 모두 head SHA를
+포함하고, 다른 SHA의 파일은 거부합니다. 실행 예시는 워크플로 파일에 있습니다.
 
 ## 개발
 
 ```bash
 python -m pip install -e ".[dev]"
-pytest
+python -m pytest
 ```
 
-테스트에서는 Git, Codex 및 Gitea를 mock 처리하므로 네트워크 접근, 자격 증명 또는
-실행 중인 Gitea 인스턴스가 필요하지 않습니다.
+- [`tests/fixtures/shop`](tests/fixtures/shop)은 base 커밋으로 쓰는 예제 Django 앱이고,
+  [`tests/fixtures/shop_head`](tests/fixtures/shop_head)를 덮어쓰면 head 커밋이 됩니다.
+  차분 실행과 영향 분석 테스트는 이 두 커밋으로 임시 git 저장소를 만들어 실제 Django와
+  SQLite에서 실행합니다.
+- `gitnexus`가 PATH에 있으면 실제 GitNexus 인덱스와 MCP 서버로 정적 그래프 비교까지
+  검증하는 테스트가 추가로 실행됩니다.
+- Codex와 Gitea API는 테스트에서 mock 처리합니다.
+
+## 알려진 한계
+
+- ORM 필드 참조는 `Model.objects…`로 시작하는 체인만 해석합니다. 관계 매니저
+  (`product.orders.filter(…)`)나 인스턴스 속성 대입은 아직 인식하지 않습니다.
+- DRF serializer의 `source=`와 Celery task 경로는 아직 수집하지 않습니다.
+- 실행 추적은 메인 스레드만 기록합니다.
+- 마이그레이션이나 의존성이 바뀐 PR은 차분 실행 대신 단정 모드로 판정합니다.
+- 차분 실행은 행이 5,000건을 넘는 테이블을 부분 비교합니다. 이때는 새로 생성된 행만
+  비교합니다.
 
 ## 참고 자료
 
-- [Codex CLI](https://learn.chatgpt.com/docs/codex/cli)
-- [Codex 인증](https://learn.chatgpt.com/docs/auth)
-- [Codex MCP 설정](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
-- [GitNexus](https://github.com/nxpatterns/gitnexus)
+- [Codex CLI](https://learn.chatgpt.com/docs/codex/cli) · [Codex 인증](https://learn.chatgpt.com/docs/auth) · [Codex MCP 설정](https://learn.chatgpt.com/docs/extend/mcp?surface=cli)
+- [GitNexus](https://github.com/abhigyanpatwari/GitNexus)
 - [Gitea Actions](https://docs.gitea.com/usage/actions/)
-- [Gitea Actions 보안 지침](https://docs.gitea.com/usage/actions/overview/)
