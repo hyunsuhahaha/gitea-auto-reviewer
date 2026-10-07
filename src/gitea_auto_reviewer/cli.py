@@ -3,16 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import os
 import sys
 from dataclasses import asdict
 from pathlib import Path
 
 from .codex import assert_logged_in, run_codex_review
+from .differential import base_worktree, differential_blocker
 from .evidence import Evidence, collect_evidence, merge_evidence
 from .git_context import build_prompt, collect_context, validate_sha
 from .gitea import GiteaClient
-from .gitnexus import index_repository
+from .gitnexus import GitNexusImpact, index_repository
+from .impact import analyze_impact, load_paths
 from .review import (Review, TestResult, preserve_reproduced_findings, render_markdown,
                      validate_grounding)
 from .reproduction import (ReproductionEvidence, ReproductionPlan, VerificationDecision,
@@ -45,10 +49,22 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--python", default="python")
     evidence.add_argument("--timeout", type=int, default=900)
     evidence.add_argument("--only", choices=["django_check", "migration_check", "pytest"])
+    evidence.add_argument("--trace-output", type=Path,
+                          help="record pytest call chains through changed functions (requires --base-sha)")
 
     evidence_merge = subparsers.add_parser("evidence-merge", help="combine SHA-bound check results")
     evidence_merge.add_argument("--input", type=Path, action="append", required=True)
     evidence_merge.add_argument("--output", type=Path, default=Path("evidence.json"))
+
+    impact = subparsers.add_parser("impact", help="find Django/ORM/runtime impact paths a static graph misses")
+    impact.add_argument("--base-sha", default=os.getenv("GITEA_BASE_SHA"))
+    impact.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
+    impact.add_argument("--repo-dir", type=Path, default=Path.cwd())
+    impact.add_argument("--python", required=True)
+    impact.add_argument("--runtime-trace", type=Path)
+    impact.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
+    impact.add_argument("--skip-gitnexus", action="store_true")
+    impact.add_argument("--output", type=Path, default=Path("impact.json"))
 
     review = subparsers.add_parser("review", help="create a review.json with Codex")
     review.add_argument("--repository", default=os.getenv("GITEA_REPOSITORY"), required=False)
@@ -60,6 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--repo-dir", type=Path, default=Path.cwd())
     review.add_argument("--output", type=Path, default=Path("review.json"))
     review.add_argument("--evidence-file", type=Path, required=True)
+    review.add_argument("--impact-file", type=Path)
     review.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     review.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
     review.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
@@ -69,6 +86,7 @@ def build_parser() -> argparse.ArgumentParser:
     plan = subparsers.add_parser("plan", help="ask Codex for rollback-only reproduction cases")
     plan.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
     plan.add_argument("--review-file", type=Path, required=True)
+    plan.add_argument("--base-sha", default=os.getenv("GITEA_BASE_SHA"))
     plan.add_argument("--output", type=Path, default=Path("reproduction-plan.json"))
     plan.add_argument("--repo-dir", type=Path, default=Path.cwd())
     plan.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
@@ -79,6 +97,7 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce = subparsers.add_parser("reproduce", help="execute reproduction cases with forced rollback")
     reproduce.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
     reproduce.add_argument("--plan-file", type=Path, required=True)
+    reproduce.add_argument("--base-sha", default=os.getenv("GITEA_BASE_SHA"))
     reproduce.add_argument("--output", type=Path, default=Path("reproduction-evidence.json"))
     reproduce.add_argument("--repo-dir", type=Path, default=Path.cwd())
     reproduce.add_argument("--python", required=True)
@@ -164,7 +183,12 @@ def review_command(arguments: argparse.Namespace) -> None:
         raise ValueError("evidence belongs to a different PR head SHA")
     assert_logged_in(arguments.codex_binary)
     pr_title = str(_required(arguments.pr_title, "PR title"))
-    prompt = build_prompt(context, repository, pr_number, pr_title, evidence.to_json())
+    impact_paths = []
+    impact_json = None
+    if arguments.impact_file is not None:
+        impact_json = arguments.impact_file.read_text(encoding="utf-8")
+        impact_paths = [asdict(item) for item in load_paths(impact_json, context.head_sha)]
+    prompt = build_prompt(context, repository, pr_number, pr_title, evidence.to_json(), impact_json)
     fixed_fields = {
         "changed_files": context.changed_files,
         "changed_file_paths": list(context.changed_file_paths),
@@ -174,6 +198,7 @@ def review_command(arguments: argparse.Namespace) -> None:
         ],
         "tests": asdict(_evidence_tests(evidence)),
         "reproduced_findings": [],
+        "impact_paths": impact_paths,
     }
     result = run_codex_review(
         prompt,
@@ -198,6 +223,7 @@ def evidence_command(arguments: argparse.Namespace) -> None:
         arguments.timeout,
         arguments.only,
         arguments.base_sha,
+        arguments.trace_output,
     )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Evidence written to {arguments.output}")
@@ -208,6 +234,28 @@ def evidence_merge_command(arguments: argparse.Namespace) -> None:
     evidence = merge_evidence(parts)
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Combined evidence written to {arguments.output}")
+
+
+def impact_command(arguments: argparse.Namespace) -> None:
+    repository = arguments.repo_dir.resolve()
+    base_sha = validate_sha(str(_required(arguments.base_sha, "base SHA")))
+    head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
+    runtime = None
+    if arguments.runtime_trace is not None and arguments.runtime_trace.exists():
+        runtime = json.loads(arguments.runtime_trace.read_text(encoding="utf-8"))
+    with contextlib.ExitStack() as stack:
+        gitnexus = None
+        if not arguments.skip_gitnexus:
+            try:
+                gitnexus = GitNexusImpact(arguments.gitnexus_binary, repository)
+                stack.callback(gitnexus.close)
+            except RuntimeError as exc:
+                print(f"GitNexus comparison skipped: {exc}", file=sys.stderr)
+        document = analyze_impact(repository, base_sha, head_sha, arguments.python, runtime, gitnexus)
+    arguments.output.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    missed = sum(1 for item in document["paths"] if item["static_missed"])
+    print(f"Impact paths written to {arguments.output}: {len(document['paths'])} paths, "
+          f"{missed} absent from GitNexus ({document['sources']})")
 
 
 def index_command(arguments: argparse.Namespace) -> None:
@@ -272,9 +320,11 @@ def plan_command(arguments: argparse.Namespace) -> None:
     head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
     review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
     assert_logged_in(arguments.codex_binary)
+    blocker = _differential_blocker(arguments.repo_dir.resolve(), arguments.base_sha, head_sha)
+    print(f"Differential execution: {'available' if blocker is None else blocker}")
     plan = plan_reproductions(review, head_sha, arguments.repo_dir.resolve(),
                               arguments.codex_binary, arguments.gitnexus_binary,
-                              arguments.reasoning_effort)
+                              arguments.reasoning_effort, blocker)
     arguments.output.write_text(plan.to_json() + "\n", encoding="utf-8")
     print(f"Reproduction plan written to {arguments.output}")
 
@@ -284,15 +334,27 @@ def reproduce_command(arguments: argparse.Namespace) -> None:
     plan = ReproductionPlan.from_json(arguments.plan_file.read_text(encoding="utf-8"), 5)
     if plan.head_sha != head_sha:
         raise ValueError("reproduction plan belongs to a different PR head SHA")
-    evidence = run_reproductions(plan, arguments.repo_dir.resolve(), arguments.python,
-                                 arguments.timeout, tuple(arguments.require_setting))
-    evidence = retry_inconclusive_reproductions(
-        plan, evidence, arguments.repo_dir.resolve(), arguments.python, arguments.timeout,
-        tuple(arguments.require_setting), arguments.codex_binary, arguments.gitnexus_binary,
-        arguments.repair_reasoning_effort,
-    )
+    repository = arguments.repo_dir.resolve()
+    needs_base = any(case.mode == "differential" for case in plan.cases)
+    blocker = _differential_blocker(repository, arguments.base_sha, head_sha) if needs_base else None
+    with contextlib.ExitStack() as stack:
+        base = (stack.enter_context(base_worktree(repository, arguments.base_sha, head_sha))
+                if needs_base and blocker is None else None)
+        evidence = run_reproductions(plan, repository, arguments.python, arguments.timeout,
+                                     tuple(arguments.require_setting), base, blocker)
+        evidence = retry_inconclusive_reproductions(
+            plan, evidence, repository, arguments.python, arguments.timeout,
+            tuple(arguments.require_setting), arguments.codex_binary, arguments.gitnexus_binary,
+            arguments.repair_reasoning_effort, base, blocker,
+        )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Reproduction evidence written to {arguments.output}")
+
+
+def _differential_blocker(repository: Path, base_sha: str | None, head_sha: str) -> str | None:
+    if not base_sha:
+        return "base SHA가 제공되지 않음"
+    return differential_blocker(repository, base_sha, head_sha)
 
 
 def finalize_command(arguments: argparse.Namespace) -> None:
@@ -337,6 +399,8 @@ def main(argv: list[str] | None = None) -> int:
             review_command(arguments)
         elif arguments.command == "plan":
             plan_command(arguments)
+        elif arguments.command == "impact":
+            impact_command(arguments)
         elif arguments.command == "reproduce":
             reproduce_command(arguments)
         elif arguments.command == "verify":
