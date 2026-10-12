@@ -22,7 +22,7 @@ MISSING_ENTRYPOINT_ERRORS = ("ImportError", "ModuleNotFoundError")
 MAX_DIFFERENCES = 10
 
 
-def differential_blocker(repository: Path, base_sha: str, head_sha: str, language: str = "en") -> str | None:
+def differential_blocker(repository: Path, base_sha: str, head_sha: str, language: str = "ko") -> str | None:
     """Return why base/head cannot share one venv and test DB, or None when they can."""
     try:
         result = subprocess.run(
@@ -98,7 +98,7 @@ class Fact:
     note: str = ""
 
 
-def outcome_facts(outcome: dict, language: str = "en") -> dict[tuple, Fact]:
+def outcome_facts(outcome: dict, language: str = "ko") -> dict[tuple, Fact]:
     """Flatten one captured run into keyed facts with run-specific identifiers normalized away."""
     facts: dict[tuple, Fact] = {}
     none, zero = text(language, "fact_none"), text(language, "fact_count", count=0)
@@ -171,7 +171,7 @@ class Comparison:
 
 
 def compare_runs(base_runs: list[dict], head_runs: list[dict], predictions: tuple[str, ...],
-                 language: str = "en") -> Comparison:
+                 language: str = "ko") -> Comparison:
     """Decide confirmed/refuted/inconclusive from repeated base and head captures."""
     for exception in (run.get("exception") or "" for run in base_runs):
         if exception.split(":", 1)[0] in MISSING_ENTRYPOINT_ERRORS:
@@ -209,7 +209,7 @@ def compare_runs(base_runs: list[dict], head_runs: list[dict], predictions: tupl
     return Comparison("refuted", summary[:1000], (), tuple(unpredicted), len(noisy))
 
 
-def _side(facts: dict[tuple, Fact], key: tuple, other: dict[tuple, Fact], language: str = "en") -> Fact | None:
+def _side(facts: dict[tuple, Fact], key: tuple, other: dict[tuple, Fact], language: str = "ko") -> Fact | None:
     """A table the other run wrote but this run did not counts as zero created rows."""
     if key in facts or len(key) != 2 or key[1] != "created_count":
         return facts.get(key)
@@ -256,7 +256,7 @@ def _field_name(name: str) -> str:
     return name[:-3] if name.endswith("_id") else name
 
 
-def _difference_line(fact: Fact, before: Fact | None, after: Fact | None, language: str = "en") -> str:
+def _difference_line(fact: Fact, before: Fact | None, after: Fact | None, language: str = "ko") -> str:
     def side(item: Fact | None) -> str:
         if item is None:
             return text(language, "fact_unchanged" if (before or after).before is not None else "fact_none")

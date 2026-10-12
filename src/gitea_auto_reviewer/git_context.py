@@ -80,7 +80,7 @@ def _git(repository: Path, arguments: list[str], required: bool) -> str:
 
 
 def build_prompt(context: ReviewContext, repository_name: str, pr_number: int, pr_title: str,
-                 evidence_json: str, impact_json: str | None = None, language: str = "en") -> str:
+                 evidence_json: str, impact_json: str | None = None, language: str = "ko") -> str:
     output_language = language_name(language)
     more_changes = text(language, "more_changes", count="N")
     impact_rules = "" if impact_json is None else """

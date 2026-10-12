@@ -39,7 +39,7 @@ MODE = "dry-run"
 def test_missing_config_uses_defaults() -> None:
     config = parse_config(None)
     assert config == ReviewConfig()
-    assert config.language == "en"
+    assert config.language == "ko"
     assert config.required_settings == ()
 
 
@@ -98,7 +98,7 @@ def _repository(tmp_path):
     _git(tmp_path, "init", "-q")
     _git(tmp_path, "config", "user.email", "test@example.com")
     _git(tmp_path, "config", "user.name", "test")
-    (tmp_path / ".ai-review.toml").write_text('language = "ko"\n', encoding="utf-8")
+    (tmp_path / ".ai-review.toml").write_text('language = "en"\n', encoding="utf-8")
     _git(tmp_path, "add", ".")
     _git(tmp_path, "commit", "-q", "-m", "base")
     base = _git(tmp_path, "rev-parse", "HEAD")
@@ -113,7 +113,7 @@ def test_base_config_ignores_pull_request_head(tmp_path) -> None:
 
     config = load_base_config(tmp_path, base)
 
-    assert config.language == "ko" and config.pass_env == ()
+    assert config.language == "en" and config.pass_env == ()
 
 
 def test_base_without_config_uses_defaults(tmp_path) -> None:
@@ -132,7 +132,7 @@ def test_config_command_writes_resolved_json(tmp_path) -> None:
     output = tmp_path / "resolved.json"
 
     assert main(["config", "--base-sha", base, "--repo-dir", str(tmp_path), "--output", str(output)]) == 0
-    assert ReviewConfig.from_json(output.read_text(encoding="utf-8")).language == "ko"
+    assert ReviewConfig.from_json(output.read_text(encoding="utf-8")).language == "en"
 
 
 def test_reasoning_reads_config_below_environment(monkeypatch, tmp_path, capsys) -> None:

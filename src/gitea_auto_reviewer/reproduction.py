@@ -198,7 +198,7 @@ class VerificationDecision:
 
     @classmethod
     def from_json(cls, raw: str, evidence: ReproductionEvidence,
-                  language: str = "en") -> "VerificationDecision":
+                  language: str = "ko") -> "VerificationDecision":
         value = json.loads(raw)
         required = {"version", "head_sha", "accepted_finding_indices", "rejected_findings"}
         if not isinstance(value, dict) or set(value) != required or value["version"] != 1:
@@ -263,7 +263,7 @@ Use mode `assert` and an empty `predicted_changes` for every case. Base/head dif
 
 def build_plan_prompt(review: Review, head_sha: str,
                       differential_blocker: str | None = "base SHA was not provided",
-                      language: str = "en") -> str:
+                      language: str = "ko") -> str:
     mode_rules = (DIFFERENTIAL_PROMPT if differential_blocker is None
                   else ASSERT_ONLY_PROMPT.format(reason=differential_blocker))
     return f"""You are planning rollback-only reproductions for candidate code-review findings.
@@ -292,7 +292,7 @@ Candidate review JSON:
 def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_binary: str,
                        gitnexus_binary: str, reasoning_effort: str = "medium",
                        differential_blocker: str | None = "base SHA was not provided",
-                       language: str = "en") -> ReproductionPlan:
+                       language: str = "ko") -> ReproductionPlan:
     if not review.findings:
         return ReproductionPlan(validate_sha(head_sha), ())
     raw = run_codex_json(build_plan_prompt(review, head_sha, differential_blocker, language), PLAN_SCHEMA,
@@ -311,7 +311,7 @@ def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_bi
 
 def verify_reproductions(review: Review, evidence: ReproductionEvidence, repository: Path,
                          codex_binary: str, gitnexus_binary: str,
-                         reasoning_effort: str = "low", language: str = "en") -> VerificationDecision:
+                         reasoning_effort: str = "low", language: str = "ko") -> VerificationDecision:
     confirmed = [item for item in evidence.results
                  if item.status == "confirmed" and item.cleanup_verified and item.target_reached]
     if not confirmed:
@@ -346,7 +346,7 @@ def retry_inconclusive_reproductions(
     base_repository: Path | None = None,
     differential_blocker: str | None = None,
     policy: EnvironmentPolicy = EnvironmentPolicy(),
-    language: str = "en",
+    language: str = "ko",
 ) -> ReproductionEvidence:
     failed_indexes = {item.finding_index for item in evidence.results if item.status == "inconclusive"}
     if not failed_indexes:
@@ -437,7 +437,7 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
                       required_settings: tuple[str, ...] = (), base_repository: Path | None = None,
                       differential_blocker: str | None = None,
                       policy: EnvironmentPolicy = EnvironmentPolicy(),
-                      language: str = "en") -> ReproductionEvidence:
+                      language: str = "ko") -> ReproductionEvidence:
     actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True, text=True, check=True).stdout.strip().lower()
     if actual != plan.head_sha:
         raise ValueError("reproduction checkout does not match the plan head SHA")
@@ -507,7 +507,7 @@ def _execute_case(python: str, runner: Path, case_path: Path, output_path: Path,
 
 def _differential_result(case: ReproductionCase, execute, repository: Path, base_repository: Path | None,
                          differential_blocker: str | None, started: float,
-                         language: str = "en") -> ReproductionResult:
+                         language: str = "ko") -> ReproductionResult:
     """Run the scenario twice on head and base, then let the fixed comparator decide."""
     def result(status: str, observed: str, cleanup: bool, head: dict[str, Any] | None = None,
                predicted: tuple[str, ...] = (), other: tuple[str, ...] = ()) -> ReproductionResult:
@@ -571,7 +571,7 @@ def _complete_evidence(plan: ReproductionPlan, results: list[ReproductionResult]
 
 
 def finalize_review(review: Review, evidence: ReproductionEvidence,
-                    decision: VerificationDecision | None = None, language: str = "en") -> Review:
+                    decision: VerificationDecision | None = None, language: str = "ko") -> Review:
     accepted = (set(decision.accepted_finding_indices) if decision is not None else
                 {item.finding_index for item in evidence.results
                  if item.status == "confirmed" and item.cleanup_verified and item.target_reached})

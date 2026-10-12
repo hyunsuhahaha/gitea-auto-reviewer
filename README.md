@@ -61,7 +61,8 @@ Impact paths
 GitNexus found the `order_view → place_order` call, but not the two report functions that read the
 stock or the signal receiver that runs when an order is created. The top of the comment also lists
 the changed files, schema and data-processing changes, Django check, migration check, and pytest
-results, and a risk level. Set `language = "ko"` for Korean comments.
+results, and a risk level. Comments are in Korean by default; the example above uses
+`language = "en"`.
 
 ## Pipeline
 
@@ -240,7 +241,8 @@ Codex access, and a Django test database for reproductions.
 4. Commit two files to the base branch of the repository under review:
    - [`examples/workflows/ai-review-linux.yml`](examples/workflows/ai-review-linux.yml) →
      `.gitea/workflows/ai-review.yml` (Forgejo: `.forgejo/workflows/ai-review.yml`)
-   - [`examples/ai-review.toml`](examples/ai-review.toml) → `.ai-review.toml`, with the Django
+   - [`examples/ai-review.toml`](examples/ai-review.toml) → `.ai-review.toml`. Set `language = "en"`
+     for English comments, and add the Django
      settings module that uses your test database and the safety switches to check before any
      reproduction.
 5. CI dependencies are installed from the repository's `requirements-ci.txt`. Set the Actions
@@ -277,7 +279,7 @@ settings. Unknown keys, invalid values, and environment variable names that look
 (containing `TOKEN`, `SECRET`, `PASSWORD`, `CODEX`, `GITEA`, …) are rejected.
 
 ```toml
-language = "en"                          # comment and Codex explanation language: en (default) | ko
+language = "ko"                          # comment and Codex explanation language: ko (default) | en
 
 [reasoning]                              # low | medium | high
 first_pass = "medium"
@@ -303,7 +305,7 @@ timeout = 180
 PAYMENT_LIVE_MODE = false
 ```
 
-Without the file, defaults apply (English comments, default skip rules, no extra environment
+Without the file, defaults apply (Korean comments, default skip rules, no extra environment
 variables). The workflows resolve the base commit's settings once with `metadata --config-output`, and
 later steps read that JSON through the `AI_REVIEW_CONFIG_FILE` environment variable. Locally,
 `gitea-auto-reviewer config --base-sha <SHA>` writes the same JSON. Reasoning effort resolves in this

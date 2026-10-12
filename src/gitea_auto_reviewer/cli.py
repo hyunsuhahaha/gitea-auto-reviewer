@@ -505,7 +505,7 @@ def reproduce_command(arguments: argparse.Namespace) -> None:
 
 
 def _differential_blocker(repository: Path, base_sha: str | None, head_sha: str,
-                          language: str = "en") -> str | None:
+                          language: str = "ko") -> str | None:
     if not base_sha:
         return text(language, "no_base_sha")
     return differential_blocker(repository, base_sha, head_sha, language)

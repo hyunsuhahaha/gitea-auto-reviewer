@@ -241,7 +241,7 @@ v0.3은 다음 환경만 지원합니다.
    - [`examples/workflows/ai-review-linux.yml`](examples/workflows/ai-review-linux.yml) →
      `.gitea/workflows/ai-review.yml` (Forgejo는 `.forgejo/workflows/ai-review.yml`)
    - [`examples/ai-review.toml`](examples/ai-review.toml) → `.ai-review.toml`.
-     `language = "ko"`로 한국어 댓글을 쓰고, 테스트 DB를 쓰는 Django 설정 모듈과 재현 전
+     댓글은 기본으로 한국어이고 `language = "en"`이면 영어입니다. 테스트 DB를 쓰는 Django 설정 모듈과 재현 전
      확인할 안전 스위치를 지정합니다.
 5. CI 의존성은 저장소의 `requirements-ci.txt`에서 설치합니다. 다른 파일이나 Python 버전을
    쓰려면 Actions 변수 `AI_REVIEW_REQUIREMENTS`, `AI_REVIEW_PYTHON_VERSION`을 설정합니다.
@@ -277,7 +277,7 @@ Gitea와 Forgejo 모두 제공하는 `github.*` 컨텍스트만 사용합니다.
 (`TOKEN`, `SECRET`, `PASSWORD`, `CODEX`, `GITEA` 등 포함)은 거부합니다.
 
 ```toml
-language = "ko"                       # 댓글·Codex 설명 언어: en(기본) | ko
+language = "ko"                       # 댓글·Codex 설명 언어: ko(기본) | en
 
 [reasoning]                           # low | medium | high
 first_pass = "medium"
@@ -303,7 +303,7 @@ timeout = 180
 PAYMENT_LIVE_MODE = false
 ```
 
-파일이 없으면 기본값(영어 댓글, 생략 규칙 기본값, 추가 환경 변수 없음)을 씁니다.
+파일이 없으면 기본값(한국어 댓글, 생략 규칙 기본값, 추가 환경 변수 없음)을 씁니다.
 예제 워크플로는 `metadata --config-output`으로 base 커밋의 설정을 한 번 해석해 JSON으로
 저장하고, 이후 단계는 `AI_REVIEW_CONFIG_FILE` 환경 변수로 그 파일을 읽습니다. 로컬에서는
 `gitea-auto-reviewer config --base-sha <SHA>`로 같은 JSON을 만들 수 있습니다. 추론 수준은

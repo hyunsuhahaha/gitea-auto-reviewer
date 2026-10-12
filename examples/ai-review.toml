@@ -2,8 +2,8 @@
 # base branch. The reviewer reads this file from the PR's base commit only, so a
 # pull request cannot loosen its own review settings. Every key is optional.
 
-# Language of the PR comment and of Codex-written explanations: "en" or "ko".
-language = "en"
+# Language of the PR comment and of Codex-written explanations: "ko" (default) or "en".
+language = "ko"
 
 [reasoning]
 # Codex reasoning effort per stage: "low", "medium", or "high".

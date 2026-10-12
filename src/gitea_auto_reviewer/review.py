@@ -650,7 +650,7 @@ def validate_verification(draft: Review, verified: Review) -> None:
 
 
 def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str,
-                    previous: PreviousReview | None = None, language: str = "en") -> str:
+                    previous: PreviousReview | None = None, language: str = "ko") -> str:
     def t(key: str, **values: object) -> str:
         return text(language, key, **values)
 
@@ -755,7 +755,7 @@ def _finding_section(findings: tuple[Finding, ...], title: str, note: str, langu
 
 def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...],
                                 new_findings: tuple[ReproducedFinding, ...] = (),
-                                language: str = "en") -> list[str]:
+                                language: str = "ko") -> list[str]:
     def t(key: str, **values: object) -> str:
         return text(language, key, **values)
 
@@ -792,7 +792,7 @@ def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...],
 
 
 def _previous_finding_section(findings: tuple[ReproducedFinding, ...], head_sha: str,
-                              language: str = "en") -> list[str]:
+                              language: str = "ko") -> list[str]:
     lines = ["", text(language, "previous_commit", sha=head_sha[:7]), text(language, "previous_commit_note")]
     for finding in findings:
         if len(lines) > 3:
@@ -803,7 +803,7 @@ def _previous_finding_section(findings: tuple[ReproducedFinding, ...], head_sha:
     return lines
 
 
-def _impact_path_section(paths: tuple[ImpactPath, ...], language: str = "en") -> list[str]:
+def _impact_path_section(paths: tuple[ImpactPath, ...], language: str = "ko") -> list[str]:
     ordered = sorted(paths, key=lambda item: (item.static_missed is not True, item.kind, item.source, item.target))
     shown = ordered[:MAX_RENDERED_IMPACT_PATHS]
     compared = any(item.static_missed is not None for item in paths)
@@ -818,7 +818,7 @@ def _impact_path_section(paths: tuple[ImpactPath, ...], language: str = "en") ->
     return lines
 
 
-def _affected_file_section(files: tuple[AffectedFile, ...], language: str = "en") -> list[str]:
+def _affected_file_section(files: tuple[AffectedFile, ...], language: str = "ko") -> list[str]:
     lines = ["", text(language, "affected_files")]
     for item in files:
         lines.append(f"• {item.path}")
@@ -849,7 +849,7 @@ def _status_text(status: str) -> str:
     return status.upper().replace("_", " ")
 
 
-def _migration_text(status: str, language: str = "en") -> str:
+def _migration_text(status: str, language: str = "ko") -> str:
     if status in {"no_missing", "missing"}:
         return text(language, f"migration_{status}")
     return {"error": "ERROR", "not_run": "NOT RUN"}[status]
