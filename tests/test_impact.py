@@ -1,3 +1,4 @@
+import functools
 import json
 import shutil
 import sys
@@ -20,6 +21,10 @@ from gitea_auto_reviewer.impact import (
 from gitea_auto_reviewer.review import ImpactPath, Review, render_markdown
 from shop_fixture import make_shop_repository
 from test_review import impact_payload
+
+# These tests pin the Korean output; English output is covered in test_messages.py.
+analyze_impact = functools.partial(analyze_impact, language="ko")
+render_markdown = functools.partial(render_markdown, language="ko")
 
 PLACE_ORDER = "shop/services.py:place_order"
 

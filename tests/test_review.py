@@ -1,3 +1,4 @@
+import functools
 import json
 from dataclasses import replace
 
@@ -12,6 +13,9 @@ from gitea_auto_reviewer.review import (
     validate_grounding,
     validate_verification,
 )
+
+# These tests pin the Korean output; English output is covered in test_messages.py.
+render_markdown = functools.partial(render_markdown, language="ko")
 
 
 def impact_payload() -> dict[str, object]:

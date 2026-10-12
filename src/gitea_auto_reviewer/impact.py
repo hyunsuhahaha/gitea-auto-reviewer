@@ -17,7 +17,8 @@ import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
-from .evidence import safe_evidence_environment
+from .evidence import EnvironmentPolicy, safe_evidence_environment
+from .messages import text
 from .git_context import validate_sha
 from .review import ImpactPath, impact_path
 
@@ -202,7 +203,8 @@ def _call_fields(node: ast.Call, method: str) -> set[str]:
     return fields
 
 
-def extract_django(repository: Path, python: str, timeout: int = 300) -> dict:
+def extract_django(repository: Path, python: str, timeout: int = 300,
+                   policy: EnvironmentPolicy = EnvironmentPolicy()) -> dict:
     """Run the Django extractor with the project's interpreter inside the evidence boundary."""
     with tempfile.TemporaryDirectory(prefix="gitea-django-graph-") as directory:
         root = Path(directory)
@@ -210,7 +212,7 @@ def extract_django(repository: Path, python: str, timeout: int = 300) -> dict:
         script.write_text(Path(__file__).with_name("_django_extract.py").read_text(encoding="utf-8"),
                           encoding="utf-8")
         (root / "home").mkdir()
-        environment = safe_evidence_environment(root / "home")
+        environment = safe_evidence_environment(root / "home", policy)
         try:
             result = subprocess.run([python, str(script), str(output)], cwd=repository, env=environment,
                                     capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -224,7 +226,7 @@ def extract_django(repository: Path, python: str, timeout: int = 300) -> dict:
 
 
 def build_paths(changed: list[ChangedFunction], django: dict, references: list[OrmReference],
-                runtime: dict | None, ranges: dict[str, list[tuple[int, int]]]) -> list[ImpactPath]:
+                runtime: dict | None, ranges: dict[str, list[tuple[int, int]]], language: str = "en") -> list[ImpactPath]:
     paths: dict[tuple, ImpactPath] = {}
 
     def add(path: ImpactPath) -> None:
@@ -254,7 +256,8 @@ def build_paths(changed: list[ChangedFunction], django: dict, references: list[O
             if (reference.model, reference.field) in written_fields and reference.function \
                     and reference.function != function.symbol:
                 add(ImpactPath("orm_field", function.symbol, reference.function,
-                               f"{reference.model.rsplit('.', 1)[-1]}.{reference.field} {_access(reference.access)}",
+                               f"{reference.model.rsplit('.', 1)[-1]}.{reference.field} "
+                               f"{_access(reference.access, language)}",
                                f"{reference.file}:{reference.line}", "orm", "downstream"))
         for item in django.get("signals", []):
             receiver = item["receiver"]
@@ -268,15 +271,17 @@ def build_paths(changed: list[ChangedFunction], django: dict, references: list[O
         for route in django.get("urls", []):
             view = route["view"]
             if f"{view['file']}:{view['name']}" == function.symbol:
-                add(ImpactPath("url", route["route"], function.symbol, "URL 진입점",
+                add(ImpactPath("url", route["route"], function.symbol, text(language, "detail_url"),
                                f"{view['file']}:{view['line']}", "django", "upstream"))
         for chain in (runtime or {}).get("callers", {}).get(function.symbol, []):
             if chain["chain"]:
                 entry = chain["chain"][-1]
                 add(ImpactPath("runtime_caller", chain["chain"][0], function.symbol,
-                               f"실행 체인 진입점 {entry}", chain["chain"][0], "runtime", "upstream"))
+                               text(language, "detail_chain_entry", entry=entry), chain["chain"][0],
+                               "runtime", "upstream"))
         for callee in (runtime or {}).get("callees", {}).get(function.symbol, []):
-            add(ImpactPath("runtime_callee", function.symbol, callee["callee"], "pytest 실행 중 호출",
+            add(ImpactPath("runtime_callee", function.symbol, callee["callee"],
+                           text(language, "detail_runtime_call"),
                            f"{callee['callee'].rsplit(':', 1)[0]}:{callee['line']}", "runtime", "downstream"))
     for model in django.get("models", []):
         for field in model["fields"]:
@@ -287,7 +292,8 @@ def build_paths(changed: list[ChangedFunction], django: dict, references: list[O
             for reference in references:
                 if reference.model == model["label"] and reference.field == field["name"] and reference.function:
                     add(ImpactPath("orm_field", source, reference.function,
-                                   f"{model['name']}.{field['name']} 정의 변경 · {_access(reference.access)}",
+                                   text(language, "detail_field_change", field=f"{model['name']}.{field['name']}",
+                                        access=_access(reference.access, language)),
                                    f"{reference.file}:{reference.line}", "orm", "downstream"))
     # A runtime edge that repeats a Django/ORM edge confirms it instead of being listed twice.
     structural = {(item.source, item.target): key for key, item in paths.items() if item.origin != "runtime"}
@@ -296,13 +302,14 @@ def build_paths(changed: list[ChangedFunction], django: dict, references: list[O
         if item.origin == "runtime" and confirmed is not None:
             del paths[key]
             original = paths[confirmed]
-            if "pytest 실행으로 확인" not in original.detail:
-                paths[confirmed] = replace(original, detail=f"{original.detail} · pytest 실행으로 확인")
+            confirmation = text(language, "detail_confirmed")
+            if confirmation not in original.detail:
+                paths[confirmed] = replace(original, detail=f"{original.detail} · {confirmation}")
     return sorted(paths.values(), key=lambda item: (item.kind, item.source, item.target))[:MAX_PATHS]
 
 
-def _access(access: str) -> str:
-    return "쓰기" if access == "write" else "읽기"
+def _access(access: str, language: str = "en") -> str:
+    return text(language, "access_write" if access == "write" else "access_read")
 
 
 def mark_static_misses(paths: list[ImpactPath], static: dict[tuple[str, str], set[tuple[str, str]]]) -> list[ImpactPath]:
@@ -321,7 +328,8 @@ def mark_static_misses(paths: list[ImpactPath], static: dict[tuple[str, str], se
 
 
 def analyze_impact(repository: Path, base_sha: str, head_sha: str, python: str,
-                   runtime: dict | None = None, gitnexus=None) -> dict:
+                   runtime: dict | None = None, gitnexus=None,
+                   policy: EnvironmentPolicy = EnvironmentPolicy(), language: str = "en") -> dict:
     """Build the impact document; ``gitnexus`` is a callable(symbol_file, name, direction) or None."""
     repository = repository.resolve()
     actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True,
@@ -332,12 +340,12 @@ def analyze_impact(repository: Path, base_sha: str, head_sha: str, python: str,
     changed = changed_functions(repository, ranges)
     sources = {"runtime": "collected" if runtime else "not_collected"}
     try:
-        django = extract_django(repository, python)
+        django = extract_django(repository, python, policy=policy)
         sources["django"] = "collected" if not django.get("url_error") else f"partial: {django['url_error']}"
     except RuntimeError as exc:
         django, sources["django"] = {"models": [], "signals": [], "urls": []}, f"error: {exc}"[:500]
     references = orm_references(repository, django.get("models", []))
-    paths = build_paths(changed, django, references, runtime, ranges)
+    paths = build_paths(changed, django, references, runtime, ranges, language)
     static_status = "not_requested"
     if gitnexus is not None and paths:
         static: dict[tuple[str, str], set[tuple[str, str]]] = {}

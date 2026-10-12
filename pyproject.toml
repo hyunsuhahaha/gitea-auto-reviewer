@@ -5,12 +5,15 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "gitea-auto-reviewer"
 version = "0.3.0"
-description = "Django data-integrity and change-impact PR reviewer for self-hosted Gitea"
+description = "Django data-integrity and change-impact PR reviewer for self-hosted Gitea and Forgejo"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [{ name = "gitea-auto-reviewer contributors" }]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/hyunsuhahaha/gitea-auto-reviewer"
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "django>=4.2"]

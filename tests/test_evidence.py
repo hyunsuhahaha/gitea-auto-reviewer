@@ -4,7 +4,8 @@ from subprocess import CompletedProcess
 
 import pytest
 
-from gitea_auto_reviewer.evidence import Check, Evidence, collect_evidence, merge_evidence, safe_evidence_environment
+from gitea_auto_reviewer.evidence import (Check, EnvironmentPolicy, Evidence, collect_evidence, merge_evidence,
+                                          safe_evidence_environment)
 
 
 def test_evidence_environment_removes_runner_credentials(monkeypatch, tmp_path: Path) -> None:
@@ -12,15 +13,16 @@ def test_evidence_environment_removes_runner_credentials(monkeypatch, tmp_path: 
     monkeypatch.setenv("CODEX_HOME", "credential-store")
     monkeypatch.setenv("COMPANY_SECRET", "secret")
     monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "configurations.ci")
-    monkeypatch.setenv("NOX_MES_CI_LIVE_PATH", r"C:\devprojects_test\shared_test\live.py")
+    monkeypatch.setenv("PROJECT_CI_LIVE_PATH", r"C:\devprojects_test\shared_test\live.py")
 
-    environment = safe_evidence_environment(tmp_path)
+    assert "PROJECT_CI_LIVE_PATH" not in safe_evidence_environment(tmp_path)
+    environment = safe_evidence_environment(tmp_path, EnvironmentPolicy(("PROJECT_CI_LIVE_PATH",)))
 
     assert "GITEA_TOKEN" not in environment
     assert "CODEX_HOME" not in environment
     assert "COMPANY_SECRET" not in environment
     assert environment["DJANGO_SETTINGS_MODULE"] == "configurations.ci"
-    assert environment["NOX_MES_CI_LIVE_PATH"] == r"C:\devprojects_test\shared_test\live.py"
+    assert environment["PROJECT_CI_LIVE_PATH"] == r"C:\devprojects_test\shared_test\live.py"
     assert environment["USERPROFILE"] == str(tmp_path)
 
 
@@ -137,3 +139,11 @@ def test_merge_rejects_missing_or_mismatched_parts() -> None:
                         Evidence("b" * 40, not_run, passed, not_run)])
     with pytest.raises(ValueError, match="pytest"):
         merge_evidence([Evidence("a" * 40, passed, passed, not_run)])
+
+
+def test_configured_settings_module_overrides_runner_value(monkeypatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("DJANGO_SETTINGS_MODULE", "runner.settings")
+
+    environment = safe_evidence_environment(tmp_path, EnvironmentPolicy((), "project.settings.test"))
+
+    assert environment["DJANGO_SETTINGS_MODULE"] == "project.settings.test"

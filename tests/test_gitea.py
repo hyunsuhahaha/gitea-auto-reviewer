@@ -211,3 +211,25 @@ def test_get_comment_reactions_returns_contents() -> None:
     client = GiteaClient("https://gitea.example", "owner/repo", "token", transport)
 
     assert client.get_comment_reactions(7) == ("+1", "-1")
+
+
+def test_get_file_text_reads_base64_contents_at_ref() -> None:
+    import base64
+
+    def transport(request, timeout):
+        assert request.full_url.endswith(f"/repos/owner/repo/contents/.ai-review.toml?ref={'a' * 40}")
+        return json.dumps({"type": "file", "encoding": "base64",
+                           "content": base64.b64encode("language = \"ko\"\n".encode()).decode()}).encode()
+
+    client = GiteaClient("https://gitea.example", "owner/repo", "token", transport)
+
+    assert client.get_file_text(".ai-review.toml", "a" * 40) == 'language = "ko"\n'
+
+
+def test_get_file_text_returns_none_for_missing_file() -> None:
+    def transport(request, timeout):
+        raise urllib.error.HTTPError(request.full_url, 404, "not found", {}, None)
+
+    client = GiteaClient("https://gitea.example", "owner/repo", "token", transport)
+
+    assert client.get_file_text(".ai-review.toml", "a" * 40) is None

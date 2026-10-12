@@ -50,6 +50,7 @@ jobs:
           REPOSITORY: ${{ gitea.repository }}
           EVENT_PR_NUMBER: ${{ gitea.event.pull_request.number }}
           MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
+          CONFIG_FILE: ${{ runner.temp }}\gitea-auto-review-config.json
         run: |
           $prNumber = if ($env:MANUAL_PR_NUMBER) { $env:MANUAL_PR_NUMBER } else { $env:EVENT_PR_NUMBER }
           # Manual runs are explicit requests, so only automatic runs may be skipped.
@@ -61,7 +62,11 @@ jobs:
             --pr "$prNumber" `
             --token-env "METADATA_GITEA_TOKEN" `
             --output-file "$env:GITHUB_OUTPUT" `
+            --config-output "$env:CONFIG_FILE" `
             @skipArgs
+          # Later steps read the base commit's resolved .ai-review.toml through this path.
+          # AppendAllText writes UTF-8 without the BOM that Windows PowerShell's Out-File adds.
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "AI_REVIEW_CONFIG_FILE=$env:CONFIG_FILE`n")
 
       - name: Check out exact PR head
         if: steps.metadata.outputs.skip != 'true'

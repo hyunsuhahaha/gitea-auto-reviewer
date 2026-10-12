@@ -35,10 +35,12 @@
 ## Project Structure
 
 - `src/gitea_auto_reviewer/cli.py`: orchestration of every pipeline stage (`index` … `comment`).
+- `src/gitea_auto_reviewer/config.py`: strict `.ai-review.toml` parsing; read only from the trusted base commit.
 - `src/gitea_auto_reviewer/evidence.py`: isolated Django/migration/pytest checks and SHA-bound evidence JSON.
 - `src/gitea_auto_reviewer/git_context.py`: trusted-base policy and base-to-head diff collection; review prompts.
 - `src/gitea_auto_reviewer/codex.py`: credential-filtered, read-only Codex CLI wrapper.
 - `src/gitea_auto_reviewer/review.py`: review schema, validation, grounding, verification, and Markdown rendering.
+- `src/gitea_auto_reviewer/messages.py`: every user-visible string in each supported language (`en`, `ko`); add new text here, never inline.
 - `src/gitea_auto_reviewer/gitea.py`: minimal Gitea issue-comment client with marker-based upsert.
 - `src/gitea_auto_reviewer/gitnexus.py`: GitNexus indexing, Codex MCP config, and a direct STDIO MCP `impact` client.
 - `src/gitea_auto_reviewer/reproduction.py`: reproduction plan/evidence schemas, runner source, assert and differential verdicts.
@@ -47,11 +49,13 @@
 - `src/gitea_auto_reviewer/_capture.py`, `_django_extract.py`, `_trace_plugin.py`: copied to temp dirs and run by the project's CI interpreter; they must not import this package.
 - `tests/fixtures/shop` (base) and `tests/fixtures/shop_head` (head overlay): sample Django app; `tests/shop_fixture.py` builds the two-commit repo.
 - `.gitea/workflows/ai-review.yml`: Windows Gitea Actions reference workflow.
+- `examples/workflows/ai-review-linux.yml` and `Dockerfile`: Linux job-container workflow (Gitea and Forgejo, `github.*` context) and its image.
 - `AI_REVIEW.md`: project-specific review policy consumed from the trusted base commit.
+- `examples/ai-review.toml`: documented sample of every `.ai-review.toml` key.
 
 ## Change Conventions
 
 - Use Conventional Commit subjects (`feat:`, `fix:`, `perf:`), matching repository history.
 - Add or update focused tests for every boundary, validation, subprocess, or API behavior change.
 - Preserve ordinary-comment-only behavior: never add approval, rejection, merge, push, or branch-protection actions.
-- Keep the workflow compatible with PowerShell and the dedicated Windows runner paths unless scope explicitly changes.
+- Keep the Windows workflow compatible with PowerShell and the dedicated Windows runner paths, and keep the Linux workflow's steps identical in name and order (`tests/test_workflow.py` enforces this).

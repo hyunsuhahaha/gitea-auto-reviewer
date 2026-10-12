@@ -1,0 +1,285 @@
+# Linux reference workflow for Gitea Actions and Forgejo Actions.
+# Copy to .gitea/workflows/ai-review.yml (Gitea) or .forgejo/workflows/ai-review.yml
+# (Forgejo) on the base branch of the repository under review.
+#
+# Runner requirements:
+# - a runner labeled `ai-review-linux` that runs jobs in Docker containers;
+# - the image built from this repository's Dockerfile (set the Actions variable
+#   AI_REVIEW_IMAGE, default gitea-auto-reviewer:0.3.0);
+# - the named volume `ai-review-codex` holding a `codex login`, allowed in the
+#   runner config (act_runner: container.valid_volumes: ["ai-review-codex"]).
+# The `github.*` context is used because Gitea and Forgejo both provide it.
+name: Codex AI review
+run-name: "AI Review PR #${{ github.event.inputs.pr_number || github.event.pull_request.number }}"
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize]
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Existing PR number to review, including a merged PR
+        required: true
+        type: string
+
+# Trusted, same-repository PRs only.
+permissions:
+  contents: read
+  issues: write
+  pull-requests: read
+
+defaults:
+  run:
+    shell: bash
+
+# A newer push supersedes an in-flight review of the same PR. The comment stage
+# also refuses to publish when the PR head has moved.
+concurrency:
+  group: ai-review-${{ github.event.inputs.pr_number || github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository }}
+    runs-on: ai-review-linux
+    timeout-minutes: 120
+    container:
+      image: ${{ vars.AI_REVIEW_IMAGE || 'gitea-auto-reviewer:0.3.0' }}
+      volumes:
+        - ai-review-codex:/codex-home
+    env:
+      CI_PYTHON: .venv-ci/bin/python
+      CI_PYTHON_VERSION: ${{ vars.AI_REVIEW_PYTHON_VERSION || '3.11' }}
+      CI_REQUIREMENTS: ${{ vars.AI_REVIEW_REQUIREMENTS || 'requirements-ci.txt' }}
+      AI_REVIEW_FIRST_PASS_EFFORT: ${{ vars.AI_REVIEW_FIRST_PASS_EFFORT }}
+      AI_REVIEW_PLAN_EFFORT: ${{ vars.AI_REVIEW_PLAN_EFFORT }}
+      AI_REVIEW_VERIFY_EFFORT: ${{ vars.AI_REVIEW_VERIFY_EFFORT }}
+      AI_REVIEW_REPAIR_EFFORT: ${{ vars.AI_REVIEW_REPAIR_EFFORT }}
+    steps:
+      - name: Resolve PR metadata
+        id: metadata
+        env:
+          METADATA_GITEA_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITEA_API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          pr_number="${MANUAL_PR_NUMBER:-$EVENT_PR_NUMBER}"
+          # Manual runs are explicit requests, so only automatic runs may be skipped.
+          skip_args=()
+          if [ -z "${MANUAL_PR_NUMBER}" ]; then skip_args+=(--allow-skip); fi
+          config_file="$RUNNER_TEMP/gitea-auto-review-config.json"
+          gitea-auto-reviewer metadata \
+            --gitea-url "$GITEA_API_URL" \
+            --repository "$REPOSITORY" \
+            --pr "$pr_number" \
+            --token-env METADATA_GITEA_TOKEN \
+            --output-file "$GITHUB_OUTPUT" \
+            --config-output "$config_file" \
+            "${skip_args[@]}"
+          # Later steps read the base commit's resolved .ai-review.toml through this path.
+          echo "AI_REVIEW_CONFIG_FILE=$config_file" >> "$GITHUB_ENV"
+
+      - name: Check out exact PR head
+        if: steps.metadata.outputs.skip != 'true'
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.metadata.outputs.head_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch base commit as data
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+        run: |
+          git config --global --add safe.directory "$PWD"
+          git fetch --no-tags origin "$BASE_SHA"
+
+      - name: Index exact PR head with GitNexus
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: gitea-auto-reviewer index --head-sha "$HEAD_SHA"
+
+      - name: Create isolated CI environment
+        if: steps.metadata.outputs.skip != 'true'
+        run: |
+          set -euo pipefail
+          uv venv --clear .venv-ci --python "$CI_PYTHON_VERSION"
+          uv pip install --python "$CI_PYTHON" -r "$CI_REQUIREMENTS"
+
+      - name: Run Django system check
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer evidence \
+            --head-sha "$HEAD_SHA" \
+            --python "$CI_PYTHON" \
+            --only django_check \
+            --output "$RUNNER_TEMP/gitea-auto-review-django.json"
+
+      - name: Run migration check
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer evidence \
+            --head-sha "$HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --python "$CI_PYTHON" \
+            --timeout 120 \
+            --only migration_check \
+            --output "$RUNNER_TEMP/gitea-auto-review-migration.json"
+
+      # The trace plugin records real call chains into and out of changed
+      # functions while the existing test suite runs.
+      - name: Run pytest with call tracing
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer evidence \
+            --head-sha "$HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --python "$CI_PYTHON" \
+            --only pytest \
+            --trace-output "$RUNNER_TEMP/gitea-auto-review-trace.json" \
+            --output "$RUNNER_TEMP/gitea-auto-review-pytest.json"
+
+      - name: Combine deterministic evidence
+        if: steps.metadata.outputs.skip != 'true'
+        run: |
+          gitea-auto-reviewer evidence-merge \
+            --input "$RUNNER_TEMP/gitea-auto-review-django.json" \
+            --input "$RUNNER_TEMP/gitea-auto-review-migration.json" \
+            --input "$RUNNER_TEMP/gitea-auto-review-pytest.json" \
+            --output "$RUNNER_TEMP/gitea-auto-review-evidence.json"
+
+      # Runs PR code (django.setup) with the evidence allowlist environment and
+      # no Codex or Gitea credentials.
+      - name: Find Django impact paths missing from the static graph
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          GITEA_TOKEN: ""
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer impact \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --python "$CI_PYTHON" \
+            --runtime-trace "$RUNNER_TEMP/gitea-auto-review-trace.json" \
+            --output "$RUNNER_TEMP/gitea-auto-review-impact.json"
+
+      - name: Show Codex reasoning settings
+        if: steps.metadata.outputs.skip != 'true'
+        run: gitea-auto-reviewer reasoning
+
+      - name: Generate first-pass Codex findings
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          GITEA_TOKEN: ""
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+          PR_TITLE: ${{ steps.metadata.outputs.pr_title }}
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+          HEAD_REPOSITORY: ${{ steps.metadata.outputs.head_repository }}
+        run: |
+          gitea-auto-reviewer review \
+            --repository "$REPOSITORY" \
+            --head-repository "$HEAD_REPOSITORY" \
+            --pr "$PR_NUMBER" \
+            --pr-title "$PR_TITLE" \
+            --base-sha "$BASE_SHA" \
+            --head-sha "$HEAD_SHA" \
+            --evidence-file "$RUNNER_TEMP/gitea-auto-review-evidence.json" \
+            --impact-file "$RUNNER_TEMP/gitea-auto-review-impact.json" \
+            --output "$RUNNER_TEMP/gitea-auto-review-candidate.json"
+
+      - name: Plan rollback-only reproductions
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          GITEA_TOKEN: ""
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer plan \
+            --head-sha "$HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --review-file "$RUNNER_TEMP/gitea-auto-review-candidate.json" \
+            --output "$RUNNER_TEMP/gitea-auto-review-reproduction-plan.json"
+
+      # Executes selected Django code against the test DB from
+      # [django].settings_module. Every case runs in transaction.atomic(), is
+      # forced to roll back, and must pass a fresh-connection cleanup check.
+      # Safety switches come from [reproduction.required_settings].
+      - name: Reproduce candidate findings with rollback
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer reproduce \
+            --head-sha "$HEAD_SHA" \
+            --base-sha "$BASE_SHA" \
+            --plan-file "$RUNNER_TEMP/gitea-auto-review-reproduction-plan.json" \
+            --python "$CI_PYTHON" \
+            --output "$RUNNER_TEMP/gitea-auto-review-reproduction.json"
+
+      - name: Verify reproduced findings with Codex
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          GITEA_TOKEN: ""
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer verify \
+            --head-sha "$HEAD_SHA" \
+            --review-file "$RUNNER_TEMP/gitea-auto-review-candidate.json" \
+            --reproduction-file "$RUNNER_TEMP/gitea-auto-review-reproduction.json" \
+            --output "$RUNNER_TEMP/gitea-auto-review-verification.json"
+
+      - name: Keep only reproduced findings
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer finalize \
+            --head-sha "$HEAD_SHA" \
+            --review-file "$RUNNER_TEMP/gitea-auto-review-candidate.json" \
+            --reproduction-file "$RUNNER_TEMP/gitea-auto-review-reproduction.json" \
+            --verification-file "$RUNNER_TEMP/gitea-auto-review-verification.json" \
+            --output "$RUNNER_TEMP/gitea-auto-review.json"
+
+      - name: Post or update PR comment
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          GITEA_REVIEW_TOKEN: ${{ secrets.AI_REVIEW_GITEA_TOKEN }}
+          GITEA_API_URL: ${{ github.api_url }}
+          REPOSITORY: ${{ github.repository }}
+          PR_NUMBER: ${{ steps.metadata.outputs.pr_number }}
+          PR_TITLE: ${{ steps.metadata.outputs.pr_title }}
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+        run: |
+          gitea-auto-reviewer comment \
+            --gitea-url "$GITEA_API_URL" \
+            --repository "$REPOSITORY" \
+            --pr "$PR_NUMBER" \
+            --pr-title "$PR_TITLE" \
+            --head-sha "$HEAD_SHA" \
+            --review-file "$RUNNER_TEMP/gitea-auto-review.json"
+
+      # Keep the intermediate JSON for debugging, whether or not earlier steps failed.
+      - name: Preserve last-run debug artifacts
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: ai-review-debug
+          path: ${{ runner.temp }}/gitea-auto-review*.json
+          if-no-files-found: ignore
