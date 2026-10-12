@@ -188,3 +188,26 @@ def test_list_changed_files_paginates_and_gives_up_when_too_large() -> None:
     assert len(client.list_changed_files(3)) == 51
     assert pages == [1, 2]
     assert client.list_changed_files(3, max_pages=1) is None
+
+
+def test_list_pull_request_numbers_stops_at_limit() -> None:
+    def transport(request, timeout):
+        assert "state=all" in request.full_url
+        page = int(request.full_url.rsplit("page=", 1)[1])
+        return json.dumps([{"number": page * 100 + index} for index in range(50)]).encode()
+
+    client = GiteaClient("https://gitea.example", "owner/repo", "token", transport)
+
+    numbers = client.list_pull_request_numbers(60)
+
+    assert len(numbers) == 60 and numbers[0] == 100 and numbers[-1] == 209
+
+
+def test_get_comment_reactions_returns_contents() -> None:
+    def transport(request, timeout):
+        assert request.full_url.endswith("/issues/comments/7/reactions")
+        return json.dumps([{"content": "+1"}, {"content": "-1"}, {"user": {}}]).encode()
+
+    client = GiteaClient("https://gitea.example", "owner/repo", "token", transport)
+
+    assert client.get_comment_reactions(7) == ("+1", "-1")

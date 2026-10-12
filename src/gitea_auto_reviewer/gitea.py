@@ -79,8 +79,39 @@ class GiteaClient:
         return "created"
 
     def get_review_comment(self, pr_number: int, author: str | None = None) -> str | None:
-        comment = self._find_comment(pr_number, f"<!-- gitea-auto-reviewer:pr={pr_number}:", author)
+        comment = self.find_review_comment(pr_number, author)
         return comment[1] if comment else None
+
+    def find_review_comment(self, pr_number: int, author: str | None = None) -> tuple[int, str] | None:
+        return self._find_comment(pr_number, f"<!-- gitea-auto-reviewer:pr={pr_number}:", author)
+
+    def get_comment_reactions(self, comment_id: int) -> tuple[str, ...]:
+        value = self._request("GET", f"/repos/{self.repository}/issues/comments/{comment_id}/reactions")
+        if value is None:
+            return ()
+        if not isinstance(value, list):
+            raise GiteaAPIError(0, "Gitea returned an invalid reaction list")
+        return tuple(item["content"] for item in value
+                     if isinstance(item, dict) and isinstance(item.get("content"), str))
+
+    def list_pull_request_numbers(self, limit: int) -> tuple[int, ...]:
+        """Return up to ``limit`` PR numbers of any state, most recently updated first."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        numbers: list[int] = []
+        page = 1
+        while len(numbers) < limit:
+            pulls = self._request(
+                "GET", f"/repos/{self.repository}/pulls?state=all&sort=recentupdate&limit=50&page={page}",
+            )
+            if not isinstance(pulls, list):
+                raise GiteaAPIError(0, "Gitea returned an invalid pull-request list")
+            numbers.extend(item["number"] for item in pulls
+                           if isinstance(item, dict) and isinstance(item.get("number"), int))
+            if len(pulls) < 50:
+                break
+            page += 1
+        return tuple(numbers[:limit])
 
     def get_authenticated_login(self) -> str | None:
         """Return the token owner's login, or None when the token cannot read it."""

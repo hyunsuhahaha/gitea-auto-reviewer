@@ -435,6 +435,8 @@ STATE_PATTERN = re.compile(r"<!-- gitea-auto-reviewer-state:([A-Za-z0-9+/=]+) --
 class PreviousReview:
     head_sha: str
     reproduced_findings: tuple[ReproducedFinding, ...]
+    unreproduced_count: int | None = None
+    rejected_count: int | None = None
 
 
 def parse_previous_review(comment: str | None) -> PreviousReview | None:
@@ -447,7 +449,13 @@ def parse_previous_review(comment: str | None) -> PreviousReview | None:
         return None
     try:
         value = json.loads(base64.b64decode(state.group(1), validate=True).decode("utf-8"))
-        return PreviousReview(marker.group(1), _reproduced_findings(value))
+        if isinstance(value, list):  # state written before finding counts were recorded
+            return PreviousReview(marker.group(1), _reproduced_findings(value))
+        if not isinstance(value, dict) or set(value) != {"reproduced", "unreproduced", "rejected"} \
+                or not _count(value["unreproduced"]) or not _count(value["rejected"]):
+            return None
+        return PreviousReview(marker.group(1), _reproduced_findings(value["reproduced"]),
+                              value["unreproduced"], value["rejected"])
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
         return None
 
@@ -646,10 +654,11 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
-    state = base64.b64encode(json.dumps(
-        [asdict(item) for item in review.reproduced_findings], ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")).decode("ascii")
+    state = base64.b64encode(json.dumps({
+        "reproduced": [asdict(item) for item in review.reproduced_findings],
+        "unreproduced": len(unreproduced),
+        "rejected": len(verification_rejected),
+    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).decode("ascii")
     return f"{marker}\n<!-- gitea-auto-reviewer-state:{state} -->\n\n```text\n" + "\n".join(lines).rstrip() + "\n```"
 
 

@@ -406,3 +406,21 @@ def test_malformed_previous_state_is_ignored() -> None:
     assert parse_previous_review(
         f"<!-- gitea-auto-reviewer:pr=1:sha={'a' * 40} -->\n<!-- gitea-auto-reviewer-state:bm90IGpzb24= -->"
     ) is None
+
+
+def test_previous_state_records_finding_counts_and_reads_legacy_lists() -> None:
+    import base64
+
+    payload = impact_payload()
+    state = parse_previous_review(
+        render_markdown(Review.from_json(json.dumps(payload)), 1, "a" * 40, "t")
+    )
+    assert state is not None
+    assert (state.unreproduced_count, state.rejected_count) == (1, 0)
+
+    legacy = base64.b64encode(json.dumps([_reproduced("문제", ["a.py:1"])]).encode()).decode()
+    old = parse_previous_review(
+        f"<!-- gitea-auto-reviewer:pr=1:sha={'b' * 40} -->\n<!-- gitea-auto-reviewer-state:{legacy} -->"
+    )
+    assert old is not None and old.unreproduced_count is None
+    assert [item.problem for item in old.reproduced_findings] == ["문제"]

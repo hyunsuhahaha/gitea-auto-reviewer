@@ -389,6 +389,22 @@ review**와 **Run workflow**를 선택하고 기존 PR 번호만 입력하세요
 중간 JSON 파일은 마지막 `always()` 단계에서
 `C:\gitea\ai-review\debug-runs\<GITHUB_RUN_ID>`에 복사됩니다.
 
+### 리뷰 정확도 집계하기
+
+봇 댓글에 남긴 👍(`+1`)/👎(`-1`) 반응과 숨김 상태에 기록된 finding 수를 최근 PR 기준으로
+집계합니다. Gitea 토큰만 사용하고 Codex나 PR 코드는 실행하지 않습니다. 봇 댓글을
+식별하기 위해 `read:user` 권한이 필요합니다.
+
+```bash
+gitea-auto-reviewer feedback   --gitea-url https://gitea.example.com   --repository acme/payments   --limit 50   --output feedback.json
+```
+
+`feedback.json`에는 PR별 `reproduced`, `unreproduced`, `rejected`, `thumbs_up`,
+`thumbs_down`과 합계가 들어갑니다. 프롬프트나 reasoning effort를 바꾸기 전후의 반응
+비율을 비교하는 용도입니다. 반응은 댓글 단위이므로 개별 finding의 정답 여부까지
+구분하지는 않습니다. 이 기능 이전에 작성된 댓글은 `unreproduced`와 `rejected`가
+`null`입니다.
+
 ## 변경 영향 형식
 
 PR 댓글에는 검증된 사실, 주요 변경, 재현된 문제 및 영향 파일을 간결하게 표시합니다.

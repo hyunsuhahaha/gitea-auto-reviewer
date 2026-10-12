@@ -202,3 +202,60 @@ def test_metadata_never_skips_without_allow_skip(monkeypatch, tmp_path) -> None:
 
     assert main(_metadata_args(tmp_path)) == 0
     assert _metadata_outputs(tmp_path)["skip"] == "false"
+
+
+def test_feedback_summarizes_reactions_on_bot_comments(monkeypatch, tmp_path, capsys) -> None:
+    from gitea_auto_reviewer.review import Review, render_markdown
+    from test_review import impact_payload
+
+    body = render_markdown(Review.from_json(json.dumps(impact_payload())), 3, "a" * 40, "t")
+
+    class Client:
+        def __init__(self, *args) -> None:
+            pass
+
+        def get_authenticated_login(self):
+            return "bot"
+
+        def list_pull_request_numbers(self, limit):
+            assert limit == 10
+            return (3, 2, 1)
+
+        def find_review_comment(self, pr_number, author):
+            assert author == "bot"
+            return {3: (30, body), 2: (20, "not a review"), 1: None}[pr_number]
+
+        def get_comment_reactions(self, comment_id):
+            assert comment_id == 30
+            return ("+1", "+1", "-1", "laugh")
+
+    monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
+    monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", Client)
+    output = tmp_path / "feedback.json"
+
+    assert main(["feedback", "--gitea-url", "https://gitea.example", "--repository", "owner/repo",
+                 "--limit", "10", "--output", str(output)]) == 0
+
+    result = json.loads(output.read_text(encoding="utf-8"))
+    assert result["reviews"] == [{
+        "pr": 3, "head_sha": "a" * 40, "reproduced": 0, "unreproduced": 1, "rejected": 0,
+        "thumbs_up": 2, "thumbs_down": 1,
+    }]
+    assert result["totals"]["reviews_with_feedback"] == 1
+    assert "positive 66.7%" in capsys.readouterr().out
+
+
+def test_feedback_requires_bot_identity(monkeypatch, tmp_path, capsys) -> None:
+    class Client:
+        def __init__(self, *args) -> None:
+            pass
+
+        def get_authenticated_login(self):
+            return None
+
+    monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
+    monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", Client)
+
+    assert main(["feedback", "--gitea-url", "https://gitea.example", "--repository", "owner/repo",
+                 "--output", str(tmp_path / "f.json")]) == 1
+    assert "read:user" in capsys.readouterr().err

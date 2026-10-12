@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import fnmatch
+import json
 import os
 import sys
 from dataclasses import asdict
@@ -123,6 +124,13 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
     comment.add_argument("--review-file", type=Path, default=Path("review.json"))
     comment.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
+
+    feedback = subparsers.add_parser("feedback", help="summarize reactions on recent bot comments")
+    feedback.add_argument("--gitea-url", default=os.getenv("GITEA_URL"))
+    feedback.add_argument("--repository", default=os.getenv("GITEA_REPOSITORY"))
+    feedback.add_argument("--limit", type=int, default=50, help="number of recent PRs to inspect")
+    feedback.add_argument("--output", type=Path, default=Path("feedback.json"))
+    feedback.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
     return parser
 
 
@@ -304,6 +312,49 @@ def comment_command(arguments: argparse.Namespace) -> None:
     print(f"PR comment {action}")
 
 
+def feedback_command(arguments: argparse.Namespace) -> None:
+    if arguments.limit < 1:
+        raise ValueError("limit must be positive")
+    token = os.getenv(arguments.token_env)
+    client = GiteaClient(str(_required(arguments.gitea_url, "Gitea URL")),
+                         str(_required(arguments.repository, "repository")),
+                         str(_required(token, arguments.token_env)))
+    author = client.get_authenticated_login()
+    if author is None:
+        raise ValueError("feedback needs a token with read:user to identify bot comments")
+    reviews = []
+    for number in client.list_pull_request_numbers(arguments.limit):
+        comment = client.find_review_comment(number, author)
+        state = parse_previous_review(comment[1]) if comment else None
+        if comment is None or state is None:
+            continue
+        reactions = client.get_comment_reactions(comment[0])
+        reviews.append({
+            "pr": number,
+            "head_sha": state.head_sha,
+            "reproduced": len(state.reproduced_findings),
+            "unreproduced": state.unreproduced_count,
+            "rejected": state.rejected_count,
+            "thumbs_up": reactions.count("+1"),
+            "thumbs_down": reactions.count("-1"),
+        })
+    totals = {
+        "reviews": len(reviews),
+        "reviews_with_feedback": sum(1 for item in reviews if item["thumbs_up"] or item["thumbs_down"]),
+        **{name: sum(item[name] or 0 for item in reviews)
+           for name in ("reproduced", "unreproduced", "rejected", "thumbs_up", "thumbs_down")},
+    }
+    arguments.output.write_text(
+        json.dumps({"totals": totals, "reviews": reviews}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    votes = totals["thumbs_up"] + totals["thumbs_down"]
+    rate = f"{totals['thumbs_up'] / votes * 100:.1f}%" if votes else "n/a"
+    print(f"{totals['reviews']} reviews, {totals['reviews_with_feedback']} with feedback, "
+          f"+1 {totals['thumbs_up']} / -1 {totals['thumbs_down']} (positive {rate})")
+    print(f"Feedback written to {arguments.output}")
+
+
 def plan_command(arguments: argparse.Namespace) -> None:
     head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
     review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
@@ -379,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
             verify_command(arguments)
         elif arguments.command == "finalize":
             finalize_command(arguments)
+        elif arguments.command == "feedback":
+            feedback_command(arguments)
         elif arguments.command == "reasoning":
             print(f"first-pass={_reasoning_effort('AI_REVIEW_FIRST_PASS_EFFORT', 'medium')}")
             print(f"plan={_reasoning_effort('AI_REVIEW_PLAN_EFFORT', 'medium')}")
