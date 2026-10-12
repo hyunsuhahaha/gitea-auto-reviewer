@@ -259,3 +259,67 @@ def test_feedback_requires_bot_identity(monkeypatch, tmp_path, capsys) -> None:
     assert main(["feedback", "--gitea-url", "https://gitea.example", "--repository", "owner/repo",
                  "--output", str(tmp_path / "f.json")]) == 1
     assert "read:user" in capsys.readouterr().err
+
+
+def _forbid(name):
+    def fail(*args, **kwargs):
+        raise AssertionError(f"{name} must not run in this stage")
+    return fail
+
+
+def test_comment_stage_never_runs_codex_or_child_processes(monkeypatch, tmp_path) -> None:
+    import subprocess
+
+    FakeGiteaClient.instances.clear()
+    for name in ("run", "Popen", "check_output", "call"):
+        monkeypatch.setattr(subprocess, name, _forbid(f"subprocess.{name}"))
+    for name in ("assert_logged_in", "run_codex_review", "plan_reproductions",
+                 "run_reproductions", "retry_inconclusive_reproductions", "verify_reproductions",
+                 "collect_evidence", "index_repository", "collect_context"):
+        monkeypatch.setattr(f"gitea_auto_reviewer.cli.{name}", _forbid(name))
+    monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
+    monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", FakeGiteaClient)
+
+    assert main(_comment_args(_review_file(tmp_path))) == 0
+    assert len(FakeGiteaClient.instances[0].posted) == 1
+
+
+def _review_args(tmp_path, head_repository="owner/repo"):
+    evidence = tmp_path / "evidence.json"
+    check = {"status": "not_run", "summary": "", "passed": None, "total": None}
+    evidence.write_text(json.dumps({"version": 1, "head_sha": "c" * 40, "checks": {
+        "django_check": check, "migration_check": check, "pytest": check,
+    }}), encoding="utf-8")
+    return ["review", "--repository", "owner/repo", "--head-repository", head_repository,
+            "--pr", "7", "--pr-title", "t", "--base-sha", "a" * 40, "--head-sha", "b" * 40,
+            "--repo-dir", str(tmp_path), "--evidence-file", str(evidence),
+            "--output", str(tmp_path / "review.json")]
+
+
+def test_review_stage_rejects_fork_pull_requests_before_reading_code(monkeypatch, tmp_path, capsys) -> None:
+    monkeypatch.setattr("gitea_auto_reviewer.cli.collect_context", _forbid("collect_context"))
+    monkeypatch.setattr("gitea_auto_reviewer.cli.run_codex_review", _forbid("run_codex_review"))
+
+    assert main(_review_args(tmp_path, head_repository="fork/repo")) == 1
+    assert "same repository" in capsys.readouterr().err
+
+
+def test_review_stage_rejects_evidence_for_another_head_before_codex(monkeypatch, tmp_path, capsys) -> None:
+    from types import SimpleNamespace
+
+    monkeypatch.setattr("gitea_auto_reviewer.cli.collect_context",
+                        lambda *args: SimpleNamespace(head_sha="b" * 40))
+    monkeypatch.setattr("gitea_auto_reviewer.cli.assert_logged_in", _forbid("assert_logged_in"))
+    monkeypatch.setattr("gitea_auto_reviewer.cli.run_codex_review", _forbid("run_codex_review"))
+
+    assert main(_review_args(tmp_path)) == 1
+    assert "different PR head SHA" in capsys.readouterr().err
+    assert not (tmp_path / "review.json").exists()
+
+
+@pytest.mark.parametrize("command", ["review", "plan", "verify"])
+def test_codex_stages_have_no_gitea_token_option(command) -> None:
+    parser = build_parser()
+    subparsers = next(action for action in parser._actions if action.dest == "command")
+    options = {option for action in subparsers.choices[command]._actions for option in action.option_strings}
+    assert "--token-env" not in options and "--gitea-url" not in options
