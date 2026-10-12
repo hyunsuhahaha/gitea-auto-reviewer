@@ -30,6 +30,8 @@ class PullRequestMetadata:
     base_sha: str
     head_sha: str
     head_repository: str
+    draft: bool = False
+    labels: tuple[str, ...] = ()
 
 
 def _default_transport(request: urllib.request.Request, timeout: float) -> bytes:
@@ -60,11 +62,11 @@ class GiteaClient:
         self.transport = transport
         self.timeout = timeout
 
-    def upsert_comment(self, pr_number: int, body: str) -> str:
+    def upsert_comment(self, pr_number: int, body: str, author: str | None = None) -> str:
         if pr_number < 1:
             raise ValueError("PR number must be positive")
         marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:"
-        comment = self._find_comment(pr_number, marker)
+        comment = self._find_comment(pr_number, marker, author)
         if comment is not None:
             try:
                 self._request("PATCH", f"/repos/{self.repository}/issues/comments/{comment[0]}", {"body": body})
@@ -76,9 +78,53 @@ class GiteaClient:
         self._request("POST", f"/repos/{self.repository}/issues/{pr_number}/comments", {"body": body})
         return "created"
 
-    def get_review_comment(self, pr_number: int) -> str | None:
-        comment = self._find_comment(pr_number, f"<!-- gitea-auto-reviewer:pr={pr_number}:")
+    def get_review_comment(self, pr_number: int, author: str | None = None) -> str | None:
+        comment = self.find_review_comment(pr_number, author)
         return comment[1] if comment else None
+
+    def find_review_comment(self, pr_number: int, author: str | None = None) -> tuple[int, str] | None:
+        return self._find_comment(pr_number, f"<!-- gitea-auto-reviewer:pr={pr_number}:", author)
+
+    def get_comment_reactions(self, comment_id: int) -> tuple[str, ...]:
+        value = self._request("GET", f"/repos/{self.repository}/issues/comments/{comment_id}/reactions")
+        if value is None:
+            return ()
+        if not isinstance(value, list):
+            raise GiteaAPIError(0, "Gitea returned an invalid reaction list")
+        return tuple(item["content"] for item in value
+                     if isinstance(item, dict) and isinstance(item.get("content"), str))
+
+    def list_pull_request_numbers(self, limit: int) -> tuple[int, ...]:
+        """Return up to ``limit`` PR numbers of any state, most recently updated first."""
+        if limit < 1:
+            raise ValueError("limit must be positive")
+        numbers: list[int] = []
+        page = 1
+        while len(numbers) < limit:
+            pulls = self._request(
+                "GET", f"/repos/{self.repository}/pulls?state=all&sort=recentupdate&limit=50&page={page}",
+            )
+            if not isinstance(pulls, list):
+                raise GiteaAPIError(0, "Gitea returned an invalid pull-request list")
+            numbers.extend(item["number"] for item in pulls
+                           if isinstance(item, dict) and isinstance(item.get("number"), int))
+            if len(pulls) < 50:
+                break
+            page += 1
+        return tuple(numbers[:limit])
+
+    def get_authenticated_login(self) -> str | None:
+        """Return the token owner's login, or None when the token cannot read it."""
+        try:
+            value = self._request("GET", "/user")
+        except GiteaAPIError as exc:
+            if exc.status in {401, 403}:
+                return None
+            raise
+        login = value.get("login") if isinstance(value, dict) else None
+        if not isinstance(login, str) or not login:
+            raise GiteaAPIError(0, "Gitea returned an invalid authenticated user")
+        return login
 
     def get_pull_request(self, pr_number: int) -> PullRequestMetadata:
         if pr_number < 1:
@@ -91,7 +137,10 @@ class GiteaClient:
             head_repository = value["head"]["repo"]["full_name"]
             merged = value.get("merged") is True
             merge_commit_sha = value.get("merge_commit_sha")
-        except (KeyError, TypeError) as exc:
+            draft = value.get("draft") is True
+            labels = tuple(item["name"] for item in value.get("labels") or ()
+                           if isinstance(item, dict) and isinstance(item.get("name"), str))
+        except (KeyError, TypeError, AttributeError) as exc:
             raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata") from exc
         if not all(isinstance(item, str) and item for item in (title, base_sha, head_sha, head_repository)):
             raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata")
@@ -102,7 +151,27 @@ class GiteaClient:
             if not isinstance(merge_commit_sha, str) or not merge_commit_sha:
                 raise GiteaAPIError(0, "Gitea returned a merged pull request without a merge commit")
             base_sha, head_sha = self._get_merge_parents(merge_commit_sha)
-        return PullRequestMetadata(pr_number, title, base_sha, head_sha, head_repository)
+        return PullRequestMetadata(pr_number, title, base_sha, head_sha, head_repository, draft, labels)
+
+    def list_changed_files(self, pr_number: int, max_pages: int = 20) -> tuple[str, ...] | None:
+        """Return changed paths, or None when the list is too large or malformed to trust."""
+        if pr_number < 1:
+            raise ValueError("PR number must be positive")
+        paths: list[str] = []
+        for page in range(1, max_pages + 1):
+            files = self._request(
+                "GET", f"/repos/{self.repository}/pulls/{pr_number}/files?limit=50&page={page}",
+            )
+            if not isinstance(files, list):
+                return None
+            for item in files:
+                name = item.get("filename") if isinstance(item, dict) else None
+                if not isinstance(name, str) or not name:
+                    return None
+                paths.append(name)
+            if len(files) < 50:
+                return tuple(paths)
+        return None
 
     def _get_merge_parents(self, sha: str) -> tuple[str, str]:
         value = self._request("GET", f"/repos/{self.repository}/git/commits/{sha}")
@@ -115,7 +184,8 @@ class GiteaClient:
             raise GiteaAPIError(0, "Gitea returned invalid merge commit parents")
         return base_sha, head_sha
 
-    def _find_comment(self, pr_number: int, marker: str) -> tuple[int, str] | None:
+    def _find_comment(self, pr_number: int, marker: str,
+                      author: str | None = None) -> tuple[int, str] | None:
         # ponytail: inspect at most 500 comments; add full pagination if real PRs exceed this.
         for page in range(1, 11):
             comments = self._request(
@@ -125,7 +195,8 @@ class GiteaClient:
             if not isinstance(comments, list):
                 raise GiteaAPIError(0, "Gitea returned an invalid comment list")
             for comment in comments:
-                if isinstance(comment, dict) and marker in str(comment.get("body", "")):
+                if (isinstance(comment, dict) and marker in str(comment.get("body", ""))
+                        and (author is None or _comment_author(comment) == author)):
                     identifier = comment.get("id")
                     if isinstance(identifier, int):
                         return identifier, str(comment.get("body", ""))
@@ -158,3 +229,9 @@ class GiteaClient:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise GiteaAPIError(0, "Gitea returned invalid JSON") from exc
+
+
+def _comment_author(comment: dict[str, Any]) -> str | None:
+    user = comment.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    return login if isinstance(login, str) else None

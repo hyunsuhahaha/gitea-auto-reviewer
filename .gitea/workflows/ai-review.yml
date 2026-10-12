@@ -21,10 +21,18 @@ defaults:
   run:
     shell: powershell
 
+# A newer push supersedes an in-flight review of the same PR. The comment stage
+# also refuses to publish when the PR head has moved, for Gitea versions that
+# ignore this key.
+concurrency:
+  group: ai-review-${{ gitea.event.inputs.pr_number || gitea.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     if: ${{ gitea.event_name == 'workflow_dispatch' || gitea.event.pull_request.head.repo.full_name == gitea.repository }}
     runs-on: ai-review-windows
+    timeout-minutes: 120
     env:
       REVIEWER_EXE: C:\gitea\ai-review\.venv\Scripts\gitea-auto-reviewer.exe
       UV_EXE: C:\gitea\ai-review\.venv\Scripts\uv.exe
@@ -44,14 +52,19 @@ jobs:
           MANUAL_PR_NUMBER: ${{ inputs.pr_number }}
         run: |
           $prNumber = if ($env:MANUAL_PR_NUMBER) { $env:MANUAL_PR_NUMBER } else { $env:EVENT_PR_NUMBER }
+          # Manual runs are explicit requests, so only automatic runs may be skipped.
+          $skipArgs = @()
+          if (-not $env:MANUAL_PR_NUMBER) { $skipArgs += "--allow-skip" }
           & $env:REVIEWER_EXE metadata `
             --gitea-url "$env:GITEA_API_URL" `
             --repository "$env:REPOSITORY" `
             --pr "$prNumber" `
             --token-env "METADATA_GITEA_TOKEN" `
-            --output-file "$env:GITHUB_OUTPUT"
+            --output-file "$env:GITHUB_OUTPUT" `
+            @skipArgs
 
       - name: Check out exact PR head
+        if: steps.metadata.outputs.skip != 'true'
         uses: actions/checkout@v4
         with:
           ref: ${{ steps.metadata.outputs.head_sha }}
@@ -59,11 +72,13 @@ jobs:
           persist-credentials: false
 
       - name: Fetch base commit as data
+        if: steps.metadata.outputs.skip != 'true'
         env:
           BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
         run: git fetch --no-tags origin $env:BASE_SHA
 
       - name: Index exact PR head with GitNexus
+        if: steps.metadata.outputs.skip != 'true'
         env:
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
         run: |
@@ -72,11 +87,13 @@ jobs:
             --gitnexus-binary "$env:GITNEXUS_EXE"
 
       - name: Create isolated CI environment
+        if: steps.metadata.outputs.skip != 'true'
         run: |
           & $env:UV_EXE venv --clear ".venv-ci" --python "C:\Python311\python.exe"
           & $env:UV_EXE pip install --python $env:CI_PYTHON -r "requirements-ci.txt"
 
       - name: Run Django system check
+        if: steps.metadata.outputs.skip != 'true'
         env:
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-django.json
@@ -88,6 +105,7 @@ jobs:
             --output "$env:CHECK_FILE"
 
       - name: Run migration check
+        if: steps.metadata.outputs.skip != 'true'
         env:
           BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
@@ -102,6 +120,7 @@ jobs:
             --output "$env:CHECK_FILE"
 
       - name: Run pytest
+        if: steps.metadata.outputs.skip != 'true'
         env:
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-pytest.json
@@ -113,6 +132,7 @@ jobs:
             --output "$env:CHECK_FILE"
 
       - name: Combine deterministic evidence
+        if: steps.metadata.outputs.skip != 'true'
         env:
           DJANGO_FILE: ${{ runner.temp }}\gitea-auto-review-django.json
           MIGRATION_FILE: ${{ runner.temp }}\gitea-auto-review-migration.json
@@ -126,9 +146,11 @@ jobs:
             --output "$env:EVIDENCE_FILE"
 
       - name: Show Codex reasoning settings
+        if: steps.metadata.outputs.skip != 'true'
         run: "& $env:REVIEWER_EXE reasoning"
 
       - name: Generate first-pass Codex findings
+        if: steps.metadata.outputs.skip != 'true'
         env:
           GITEA_TOKEN: ""
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
@@ -152,6 +174,7 @@ jobs:
             --output "$env:REVIEW_FILE"
 
       - name: Plan rollback-only reproductions
+        if: steps.metadata.outputs.skip != 'true'
         env:
           GITEA_TOKEN: ""
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
@@ -168,6 +191,7 @@ jobs:
       # case runs in transaction.atomic(), is forced to roll back, and must
       # pass a fresh-connection cleanup check before it can be published.
       - name: Reproduce candidate findings with rollback
+        if: steps.metadata.outputs.skip != 'true'
         env:
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           PLAN_FILE: ${{ runner.temp }}\gitea-auto-review-reproduction-plan.json
@@ -182,6 +206,7 @@ jobs:
             --output "$env:REPRODUCTION_FILE"
 
       - name: Verify reproduced findings with Codex
+        if: steps.metadata.outputs.skip != 'true'
         env:
           GITEA_TOKEN: ""
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
@@ -197,6 +222,7 @@ jobs:
             --output "$env:VERIFICATION_FILE"
 
       - name: Keep only reproduced findings
+        if: steps.metadata.outputs.skip != 'true'
         env:
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           CANDIDATE_FILE: ${{ runner.temp }}\gitea-auto-review-candidate.json
@@ -212,6 +238,7 @@ jobs:
             --output "$env:REVIEW_FILE"
 
       - name: Post or update PR comment
+        if: steps.metadata.outputs.skip != 'true'
         env:
           GITEA_REVIEW_TOKEN: ${{ secrets.AI_REVIEW_GITEA_TOKEN }}
           REVIEW_FILE: ${{ runner.temp }}\gitea-auto-review.json

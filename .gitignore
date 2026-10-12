@@ -10,3 +10,6 @@ pytest-cache-files-*/
 build/
 dist/
 review.json
+qa-temp/
+review_diff.txt
+.nox-mes-pr-work/

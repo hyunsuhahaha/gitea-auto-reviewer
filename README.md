@@ -211,8 +211,10 @@ Codex 사용 권한을 이용합니다. `OPENAI_API_KEY`는 읽거나 요구하�
 ## Gitea 설정하기
 
 1. 전용 Gitea 봇 또는 서비스 계정을 생성합니다.
-2. 토큰에는 이슈/PR 댓글 조회·생성·수정 권한만 부여합니다. 병합 또는 관리자 권한은
-   부여하지 마세요.
+2. 토큰에는 이슈/PR 댓글 조회·생성·수정 권한과 `read:user` 권한만 부여합니다.
+   병합 또는 관리자 권한은 부여하지 마세요. `read:user`로 봇 계정 이름을 확인해 봇이
+   직접 작성한 댓글의 숨김 상태만 신뢰합니다. 이 권한이 없으면 댓글은 정상 게시되지만
+   이전 리뷰 상태를 이어받지 않습니다.
 3. 토큰을 저장소 또는 조직 Actions 비밀 정보 `AI_REVIEW_GITEA_TOKEN`으로
    저장합니다.
 4. [`.gitea/workflows/ai-review.yml`](.gitea/workflows/ai-review.yml)을 리뷰 대상
@@ -356,6 +358,27 @@ gitea-auto-reviewer comment \
 `GITEA_REVIEW_TOKEN`으로 전달할 수도 있습니다. 토큰은 프로세스 목록이나 셸 기록에
 나타나지 않도록 환경 변수로만 받습니다.
 
+게시 직전에 Gitea에서 PR의 현재 head SHA를 다시 조회합니다. 리뷰 도중 새 커밋이
+push되어 head가 바뀌었으면 댓글을 게시하지 않고 종료하므로, 늦게 끝난 이전 실행이
+최신 리뷰를 덮어쓰지 않습니다. 예제 워크플로는 같은 PR의 이전 실행을 취소하는
+`concurrency` 그룹과 120분 `timeout-minutes`도 설정합니다. `concurrency`를 지원하지
+않는 Gitea 버전에서도 head SHA 재확인은 그대로 적용됩니다.
+
+### 자동 리뷰 생략 조건
+
+`pull_request_target`으로 시작된 자동 실행은 `metadata --allow-skip`으로 다음 PR을
+건너뜁니다. 생략된 실행은 checkout, 증거 수집, Codex 호출과 댓글 게시를 모두 하지
+않습니다.
+
+- `skip-ai-review` 라벨이 붙은 PR (`--skip-label`로 이름 변경 가능)
+- draft PR 또는 제목이 `WIP:`, `[WIP]`, `WIP `로 시작하는 PR
+- 변경 파일이 모두 `*.md`, `*.rst`, `docs/*`, `LICENSE`인 PR
+
+변경 파일 목록이 1,000개를 넘거나 형식이 올바르지 않으면 문서 전용으로 판단하지
+않습니다. `requirements.txt` 같은 의존성 파일은 문서로 보지 않습니다. 수동
+`workflow_dispatch` 실행은 명시적인 요청이므로 생략하지 않습니다. 라벨은 PR 이벤트를
+새로 만들지 않으므로, 라벨을 붙인 뒤 다음 push부터 적용됩니다.
+
 ### 기존 PR 또는 병합된 PR을 수동으로 리뷰하기
 
 예제 워크플로는 `workflow_dispatch`도 지원합니다. Actions 페이지에서 **Codex AI
@@ -365,6 +388,22 @@ review**와 **Run workflow**를 선택하고 기존 PR 번호만 입력하세요
 
 중간 JSON 파일은 마지막 `always()` 단계에서
 `C:\gitea\ai-review\debug-runs\<GITHUB_RUN_ID>`에 복사됩니다.
+
+### 리뷰 정확도 집계하기
+
+봇 댓글에 남긴 👍(`+1`)/👎(`-1`) 반응과 숨김 상태에 기록된 finding 수를 최근 PR 기준으로
+집계합니다. Gitea 토큰만 사용하고 Codex나 PR 코드는 실행하지 않습니다. 봇 댓글을
+식별하기 위해 `read:user` 권한이 필요합니다.
+
+```bash
+gitea-auto-reviewer feedback   --gitea-url https://gitea.example.com   --repository acme/payments   --limit 50   --output feedback.json
+```
+
+`feedback.json`에는 PR별 `reproduced`, `unreproduced`, `rejected`, `thumbs_up`,
+`thumbs_down`과 합계가 들어갑니다. 프롬프트나 reasoning effort를 바꾸기 전후의 반응
+비율을 비교하는 용도입니다. 반응은 댓글 단위이므로 개별 finding의 정답 여부까지
+구분하지는 않습니다. 이 기능 이전에 작성된 댓글은 `unreproduced`와 `rejected`가
+`null`입니다.
 
 ## 변경 영향 형식
 
@@ -403,7 +442,10 @@ API Contract     변경
 ```
 
 같은 PR head SHA를 다시 실행하면 이전에 재현된 발견 사항을 새 결과와 병합합니다.
-다른 SHA는 새 결과 집합을 시작합니다.
+다른 SHA는 새 결과 집합을 시작하되, 직전 리뷰와 비교해 처음 재현된 문제에 `[신규]`를
+붙이고 직전 커밋에서 재현됐지만 이번에 같은 문제가 확인되지 않은 항목은
+`이전 커밋(abc1234)에서 재현됐던 문제`로 한 번 더 보여 줍니다. 문제 문구가 같거나
+근거 위치가 같으면 같은 문제로 봅니다. 이 섹션은 다음 push에서 다시 이어지지 않습니다.
 
 구체적인 버그, 보안, 성능, 의존성 문제 및 명시적인 base 정책 위반만 게시합니다.
 스타일, 이름 짓기 및 일반적인 개선 의견은 제외합니다. 각 항목의 파일, 줄 범위와 정책

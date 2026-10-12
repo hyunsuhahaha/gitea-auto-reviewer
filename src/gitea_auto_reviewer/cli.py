@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
+import json
 import os
 import sys
 from dataclasses import asdict
@@ -11,10 +13,10 @@ from pathlib import Path
 from .codex import assert_logged_in, run_codex_review
 from .evidence import Evidence, collect_evidence, merge_evidence
 from .git_context import build_prompt, collect_context, validate_sha
-from .gitea import GiteaClient
+from .gitea import GiteaClient, PullRequestMetadata
 from .gitnexus import index_repository
-from .review import (Review, TestResult, preserve_reproduced_findings, render_markdown,
-                     validate_grounding)
+from .review import (Review, TestResult, parse_previous_review, preserve_reproduced_findings,
+                     render_markdown, validate_grounding)
 from .reproduction import (ReproductionEvidence, ReproductionPlan, VerificationDecision,
                            finalize_review, plan_reproductions, run_reproductions,
                            retry_inconclusive_reproductions, verify_reproductions)
@@ -36,6 +38,9 @@ def build_parser() -> argparse.ArgumentParser:
     metadata.add_argument("--pr", type=int, required=True)
     metadata.add_argument("--output-file", type=Path, required=True)
     metadata.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
+    metadata.add_argument("--allow-skip", action="store_true",
+                          help="skip draft, labeled, or documentation-only PRs")
+    metadata.add_argument("--skip-label", default="skip-ai-review")
 
     evidence = subparsers.add_parser("evidence", help="run deterministic checks in isolated CI")
     evidence.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -119,6 +124,13 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
     comment.add_argument("--review-file", type=Path, default=Path("review.json"))
     comment.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
+
+    feedback = subparsers.add_parser("feedback", help="summarize reactions on recent bot comments")
+    feedback.add_argument("--gitea-url", default=os.getenv("GITEA_URL"))
+    feedback.add_argument("--repository", default=os.getenv("GITEA_REPOSITORY"))
+    feedback.add_argument("--limit", type=int, default=50, help="number of recent PRs to inspect")
+    feedback.add_argument("--output", type=Path, default=Path("feedback.json"))
+    feedback.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
     return parser
 
 
@@ -137,6 +149,24 @@ def _reasoning_effort(name: str, fallback: str) -> str:
     if value not in {"low", "medium", "high"}:
         raise ValueError(f"{name} must be low, medium, or high")
     return value
+
+
+DOCUMENTATION_PATTERNS = ("*.md", "*.rst", "docs/*", "LICENSE")
+WIP_PREFIXES = ("wip:", "[wip]", "wip ")
+
+
+def _skip_reason(metadata: PullRequestMetadata, changed_files: tuple[str, ...] | None,
+                 skip_label: str) -> str | None:
+    if skip_label and skip_label in metadata.labels:
+        return f"{skip_label} label"
+    if metadata.draft or metadata.title.strip().lower().startswith(WIP_PREFIXES):
+        return "draft pull request"
+    if changed_files and all(
+        any(fnmatch.fnmatchcase(path, pattern) for pattern in DOCUMENTATION_PATTERNS)
+        for path in changed_files
+    ):
+        return "documentation-only change"
+    return None
 
 
 def _required(value: object, name: str):
@@ -236,9 +266,16 @@ def metadata_command(arguments: argparse.Namespace) -> None:
         "head_sha": validate_sha(metadata.head_sha),
         "head_repository": metadata.head_repository,
     }
+    reason = None
+    if arguments.allow_skip:
+        reason = _skip_reason(metadata, client.list_changed_files(metadata.number), arguments.skip_label)
+    values["skip"] = "true" if reason else "false"
+    values["skip_reason"] = reason or ""
     with arguments.output_file.open("a", encoding="utf-8") as output:
         output.writelines(f"{name}={value}\n" for name, value in values.items())
     print(f"Resolved PR #{metadata.number} at {values['head_sha']}")
+    if reason:
+        print(f"Skipping AI review: {reason}")
 
 
 def _evidence_tests(evidence: Evidence) -> TestResult:
@@ -261,11 +298,61 @@ def comment_command(arguments: argparse.Namespace) -> None:
         str(_required(arguments.repository, "repository")),
         str(_required(token, arguments.token_env)),
     )
-    review = preserve_reproduced_findings(review, client.get_review_comment(pr_number), head_sha)
-    action = client.upsert_comment(
-        pr_number, render_markdown(review, pr_number, head_sha, pr_title)
-    )
+    current_head = client.get_pull_request(pr_number).head_sha
+    if current_head != head_sha:
+        # A newer push started its own review; never let this older run overwrite it.
+        print(f"PR head moved to {current_head}; skipped stale review for {head_sha}")
+        return
+    # Hidden review state is only trusted from the bot's own comment; anyone can copy the marker.
+    author = client.get_authenticated_login()
+    previous = client.get_review_comment(pr_number, author) if author else None
+    review = preserve_reproduced_findings(review, previous, head_sha)
+    body = render_markdown(review, pr_number, head_sha, pr_title, parse_previous_review(previous))
+    action = client.upsert_comment(pr_number, body, author)
     print(f"PR comment {action}")
+
+
+def feedback_command(arguments: argparse.Namespace) -> None:
+    if arguments.limit < 1:
+        raise ValueError("limit must be positive")
+    token = os.getenv(arguments.token_env)
+    client = GiteaClient(str(_required(arguments.gitea_url, "Gitea URL")),
+                         str(_required(arguments.repository, "repository")),
+                         str(_required(token, arguments.token_env)))
+    author = client.get_authenticated_login()
+    if author is None:
+        raise ValueError("feedback needs a token with read:user to identify bot comments")
+    reviews = []
+    for number in client.list_pull_request_numbers(arguments.limit):
+        comment = client.find_review_comment(number, author)
+        state = parse_previous_review(comment[1]) if comment else None
+        if comment is None or state is None:
+            continue
+        reactions = client.get_comment_reactions(comment[0])
+        reviews.append({
+            "pr": number,
+            "head_sha": state.head_sha,
+            "reproduced": len(state.reproduced_findings),
+            "unreproduced": state.unreproduced_count,
+            "rejected": state.rejected_count,
+            "thumbs_up": reactions.count("+1"),
+            "thumbs_down": reactions.count("-1"),
+        })
+    totals = {
+        "reviews": len(reviews),
+        "reviews_with_feedback": sum(1 for item in reviews if item["thumbs_up"] or item["thumbs_down"]),
+        **{name: sum(item[name] or 0 for item in reviews)
+           for name in ("reproduced", "unreproduced", "rejected", "thumbs_up", "thumbs_down")},
+    }
+    arguments.output.write_text(
+        json.dumps({"totals": totals, "reviews": reviews}, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    votes = totals["thumbs_up"] + totals["thumbs_down"]
+    rate = f"{totals['thumbs_up'] / votes * 100:.1f}%" if votes else "n/a"
+    print(f"{totals['reviews']} reviews, {totals['reviews_with_feedback']} with feedback, "
+          f"+1 {totals['thumbs_up']} / -1 {totals['thumbs_down']} (positive {rate})")
+    print(f"Feedback written to {arguments.output}")
 
 
 def plan_command(arguments: argparse.Namespace) -> None:
@@ -343,6 +430,8 @@ def main(argv: list[str] | None = None) -> int:
             verify_command(arguments)
         elif arguments.command == "finalize":
             finalize_command(arguments)
+        elif arguments.command == "feedback":
+            feedback_command(arguments)
         elif arguments.command == "reasoning":
             print(f"first-pass={_reasoning_effort('AI_REVIEW_FIRST_PASS_EFFORT', 'medium')}")
             print(f"plan={_reasoning_effort('AI_REVIEW_PLAN_EFFORT', 'medium')}")

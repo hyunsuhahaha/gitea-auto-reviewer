@@ -427,20 +427,50 @@ def _reproduced_findings(value: object) -> tuple[ReproducedFinding, ...]:
     return tuple(ReproducedFinding.from_value(item) for item in value)
 
 
-def preserve_reproduced_findings(review: Review, previous_comment: str | None, head_sha: str) -> Review:
-    if not previous_comment or f"<!-- gitea-auto-reviewer:pr=" not in previous_comment \
-            or f":sha={head_sha} -->" not in previous_comment:
-        return review
-    match = re.search(r"<!-- gitea-auto-reviewer-state:([A-Za-z0-9+/=]+) -->", previous_comment)
-    if not match:
-        return review
+MARKER_PATTERN = re.compile(r"<!-- gitea-auto-reviewer:pr=\d+:sha=([0-9a-f]{40}) -->")
+STATE_PATTERN = re.compile(r"<!-- gitea-auto-reviewer-state:([A-Za-z0-9+/=]+) -->")
+
+
+@dataclass(frozen=True)
+class PreviousReview:
+    head_sha: str
+    reproduced_findings: tuple[ReproducedFinding, ...]
+    unreproduced_count: int | None = None
+    rejected_count: int | None = None
+
+
+def parse_previous_review(comment: str | None) -> PreviousReview | None:
+    """Decode the hidden state of an earlier bot comment; malformed state is ignored."""
+    if not comment:
+        return None
+    marker = MARKER_PATTERN.search(comment)
+    state = STATE_PATTERN.search(comment)
+    if not marker or not state:
+        return None
     try:
-        value = json.loads(base64.b64decode(match.group(1), validate=True).decode("utf-8"))
-        previous = _reproduced_findings(value)
+        value = json.loads(base64.b64decode(state.group(1), validate=True).decode("utf-8"))
+        if isinstance(value, list):  # state written before finding counts were recorded
+            return PreviousReview(marker.group(1), _reproduced_findings(value))
+        if not isinstance(value, dict) or set(value) != {"reproduced", "unreproduced", "rejected"} \
+                or not _count(value["unreproduced"]) or not _count(value["rejected"]):
+            return None
+        return PreviousReview(marker.group(1), _reproduced_findings(value["reproduced"]),
+                              value["unreproduced"], value["rejected"])
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        return None
+
+
+def preserve_reproduced_findings(review: Review, previous_comment: str | None, head_sha: str) -> Review:
+    previous = parse_previous_review(previous_comment)
+    if previous is None or previous.head_sha != head_sha:
         return review
-    merged = tuple(dict.fromkeys((*previous, *review.reproduced_findings)))
+    merged = tuple(dict.fromkeys((*previous.reproduced_findings, *review.reproduced_findings)))
     return replace(review, reproduced_findings=merged)
+
+
+def _same_problem(left: ReproducedFinding, right: ReproducedFinding) -> bool:
+    # Codex rewords problems between runs, so identical evidence also counts as the same issue.
+    return left.problem == right.problem or left.evidence == right.evidence
 
 
 def _impact_details(value: object) -> tuple[ImpactDetail, ...]:
@@ -543,8 +573,19 @@ def validate_verification(draft: Review, verified: Review) -> None:
         raise ValueError("verification introduced or rewrote an affected file")
 
 
-def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str) -> str:
+def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str,
+                    previous: PreviousReview | None = None) -> str:
     title = " ".join(pr_title.split())[:120]
+    if previous is not None and previous.head_sha == head_sha:
+        previous = None
+    new_findings = tuple(
+        item for item in review.reproduced_findings
+        if previous is not None and not any(_same_problem(item, old) for old in previous.reproduced_findings)
+    )
+    resolved = tuple(
+        item for item in (previous.reproduced_findings if previous else ())
+        if not any(_same_problem(item, current) for current in review.reproduced_findings)
+    )
     heading = f"PR #{pr_number} {title}"
     reproduced_keys = {(item.problem, item.impact, item.evidence) for item in review.reproduced_findings}
     static_findings = tuple(item for item in review.findings
@@ -597,8 +638,9 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         "주요 변경",
         *[f"• {item}" for item in review.key_changes],
         "",
-        *(_reproduced_finding_section(review.reproduced_findings)
+        *(_reproduced_finding_section(review.reproduced_findings, new_findings)
           if review.reproduced_findings else ["", "재현된 문제", "  • 확정된 재현 문제 없음"]),
+        *(_previous_finding_section(resolved, previous.head_sha) if previous and resolved else []),
         *(_finding_section(
             unreproduced,
             "재현하지 못한 발견 사항",
@@ -612,10 +654,11 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         *(_affected_file_section(review.affected_files) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
-    state = base64.b64encode(json.dumps(
-        [asdict(item) for item in review.reproduced_findings], ensure_ascii=False,
-        separators=(",", ":"),
-    ).encode("utf-8")).decode("ascii")
+    state = base64.b64encode(json.dumps({
+        "reproduced": [asdict(item) for item in review.reproduced_findings],
+        "unreproduced": len(unreproduced),
+        "rejected": len(verification_rejected),
+    }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).decode("ascii")
     return f"{marker}\n<!-- gitea-auto-reviewer-state:{state} -->\n\n```text\n" + "\n".join(lines).rstrip() + "\n```"
 
 
@@ -641,12 +684,13 @@ def _finding_section(findings: tuple[Finding, ...], title: str, note: str) -> li
     return ["", *lines]
 
 
-def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...]) -> list[str]:
+def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...],
+                                new_findings: tuple[ReproducedFinding, ...] = ()) -> list[str]:
     lines = ["재현된 문제"]
     for finding in findings:
         if len(lines) > 1:
             lines.append("")
-        lines.append(f"  • {finding.problem}")
+        lines.append(f"  • {'[신규] ' if finding in new_findings else ''}{finding.problem}")
         lines.append(f"    영향: {finding.impact}")
         lines.append("    재현에 사용한 조건")
         lines.extend(f"      {index}. {condition}" for index, condition in enumerate(
@@ -665,6 +709,18 @@ def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...]) -> list
         lines.append("    롤백 검증: 통과")
         lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
     return ["", *lines]
+
+
+def _previous_finding_section(findings: tuple[ReproducedFinding, ...], head_sha: str) -> list[str]:
+    lines = ["", f"이전 커밋({head_sha[:7]})에서 재현됐던 문제",
+             "※ 이번 커밋의 재현 결과에서 같은 문제가 확인되지 않음 — 수정됐거나 재현 경로가 달라졌을 수 있음"]
+    for finding in findings:
+        if len(lines) > 3:
+            lines.append("")
+        lines.append(f"  • {finding.problem}")
+        lines.append(f"    영향: {finding.impact}")
+        lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
+    return lines
 
 
 def _affected_file_section(files: tuple[AffectedFile, ...]) -> list[str]:
