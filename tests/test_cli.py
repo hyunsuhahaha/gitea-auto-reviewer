@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from gitea_auto_reviewer.cli import build_parser, main
 from gitea_auto_reviewer.reproduction import ReproductionEvidence, ReproductionResult
 
@@ -139,3 +141,64 @@ def test_comment_ignores_previous_state_when_bot_login_is_unknown(monkeypatch, t
 
     assert main(_comment_args(_review_file(tmp_path))) == 0
     assert calls == []
+
+
+def _metadata_args(tmp_path, *extra):
+    return ["metadata", "--gitea-url", "https://gitea.example", "--repository", "owner/repo",
+            "--pr", "7", "--output-file", str(tmp_path / "out.txt"), *extra]
+
+
+def _metadata_outputs(tmp_path):
+    lines = (tmp_path / "out.txt").read_text(encoding="utf-8").splitlines()
+    return dict(line.split("=", 1) for line in lines)
+
+
+@pytest.mark.parametrize(("title", "draft", "labels", "files", "reason"), [
+    ("기능", False, (), ("app/views.py",), ""),
+    ("기능", False, ("skip-ai-review",), ("app/views.py",), "skip-ai-review label"),
+    ("기능", True, (), ("app/views.py",), "draft pull request"),
+    ("WIP: 기능", False, (), ("app/views.py",), "draft pull request"),
+    ("문서", False, (), ("README.md", "docs/guide/setup.rst"), "documentation-only change"),
+    ("의존성", False, (), ("README.md", "requirements.txt"), ""),
+    ("거대", False, (), None, ""),
+])
+def test_metadata_reports_skip_reason(monkeypatch, tmp_path, title, draft, labels, files, reason) -> None:
+    from gitea_auto_reviewer.gitea import PullRequestMetadata
+
+    class Client:
+        def __init__(self, *args) -> None:
+            pass
+
+        def get_pull_request(self, pr_number):
+            return PullRequestMetadata(pr_number, title, "a" * 40, "b" * 40, "owner/repo", draft, labels)
+
+        def list_changed_files(self, pr_number):
+            return files
+
+    monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
+    monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", Client)
+
+    assert main(_metadata_args(tmp_path, "--allow-skip")) == 0
+    outputs = _metadata_outputs(tmp_path)
+    assert outputs["skip"] == ("true" if reason else "false")
+    assert outputs["skip_reason"] == reason
+
+
+def test_metadata_never_skips_without_allow_skip(monkeypatch, tmp_path) -> None:
+    from gitea_auto_reviewer.gitea import PullRequestMetadata
+
+    class Client:
+        def __init__(self, *args) -> None:
+            pass
+
+        def get_pull_request(self, pr_number):
+            return PullRequestMetadata(pr_number, "WIP", "a" * 40, "b" * 40, "owner/repo", True)
+
+        def list_changed_files(self, pr_number):
+            raise AssertionError("manual reviews do not inspect skip rules")
+
+    monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
+    monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", Client)
+
+    assert main(_metadata_args(tmp_path)) == 0
+    assert _metadata_outputs(tmp_path)["skip"] == "false"

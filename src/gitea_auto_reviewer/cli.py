@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import sys
 from dataclasses import asdict
@@ -11,7 +12,7 @@ from pathlib import Path
 from .codex import assert_logged_in, run_codex_review
 from .evidence import Evidence, collect_evidence, merge_evidence
 from .git_context import build_prompt, collect_context, validate_sha
-from .gitea import GiteaClient
+from .gitea import GiteaClient, PullRequestMetadata
 from .gitnexus import index_repository
 from .review import (Review, TestResult, parse_previous_review, preserve_reproduced_findings,
                      render_markdown, validate_grounding)
@@ -36,6 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
     metadata.add_argument("--pr", type=int, required=True)
     metadata.add_argument("--output-file", type=Path, required=True)
     metadata.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
+    metadata.add_argument("--allow-skip", action="store_true",
+                          help="skip draft, labeled, or documentation-only PRs")
+    metadata.add_argument("--skip-label", default="skip-ai-review")
 
     evidence = subparsers.add_parser("evidence", help="run deterministic checks in isolated CI")
     evidence.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -139,6 +143,24 @@ def _reasoning_effort(name: str, fallback: str) -> str:
     return value
 
 
+DOCUMENTATION_PATTERNS = ("*.md", "*.rst", "docs/*", "LICENSE")
+WIP_PREFIXES = ("wip:", "[wip]", "wip ")
+
+
+def _skip_reason(metadata: PullRequestMetadata, changed_files: tuple[str, ...] | None,
+                 skip_label: str) -> str | None:
+    if skip_label and skip_label in metadata.labels:
+        return f"{skip_label} label"
+    if metadata.draft or metadata.title.strip().lower().startswith(WIP_PREFIXES):
+        return "draft pull request"
+    if changed_files and all(
+        any(fnmatch.fnmatchcase(path, pattern) for pattern in DOCUMENTATION_PATTERNS)
+        for path in changed_files
+    ):
+        return "documentation-only change"
+    return None
+
+
 def _required(value: object, name: str):
     if value is None or value == "":
         raise ValueError(f"{name} is required")
@@ -236,9 +258,16 @@ def metadata_command(arguments: argparse.Namespace) -> None:
         "head_sha": validate_sha(metadata.head_sha),
         "head_repository": metadata.head_repository,
     }
+    reason = None
+    if arguments.allow_skip:
+        reason = _skip_reason(metadata, client.list_changed_files(metadata.number), arguments.skip_label)
+    values["skip"] = "true" if reason else "false"
+    values["skip_reason"] = reason or ""
     with arguments.output_file.open("a", encoding="utf-8") as output:
         output.writelines(f"{name}={value}\n" for name, value in values.items())
     print(f"Resolved PR #{metadata.number} at {values['head_sha']}")
+    if reason:
+        print(f"Skipping AI review: {reason}")
 
 
 def _evidence_tests(evidence: Evidence) -> TestResult:

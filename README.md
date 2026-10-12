@@ -364,6 +364,21 @@ push되어 head가 바뀌었으면 댓글을 게시하지 않고 종료하므로
 `concurrency` 그룹과 120분 `timeout-minutes`도 설정합니다. `concurrency`를 지원하지
 않는 Gitea 버전에서도 head SHA 재확인은 그대로 적용됩니다.
 
+### 자동 리뷰 생략 조건
+
+`pull_request_target`으로 시작된 자동 실행은 `metadata --allow-skip`으로 다음 PR을
+건너뜁니다. 생략된 실행은 checkout, 증거 수집, Codex 호출과 댓글 게시를 모두 하지
+않습니다.
+
+- `skip-ai-review` 라벨이 붙은 PR (`--skip-label`로 이름 변경 가능)
+- draft PR 또는 제목이 `WIP:`, `[WIP]`, `WIP `로 시작하는 PR
+- 변경 파일이 모두 `*.md`, `*.rst`, `docs/*`, `LICENSE`인 PR
+
+변경 파일 목록이 1,000개를 넘거나 형식이 올바르지 않으면 문서 전용으로 판단하지
+않습니다. `requirements.txt` 같은 의존성 파일은 문서로 보지 않습니다. 수동
+`workflow_dispatch` 실행은 명시적인 요청이므로 생략하지 않습니다. 라벨은 PR 이벤트를
+새로 만들지 않으므로, 라벨을 붙인 뒤 다음 push부터 적용됩니다.
+
 ### 기존 PR 또는 병합된 PR을 수동으로 리뷰하기
 
 예제 워크플로는 `workflow_dispatch`도 지원합니다. Actions 페이지에서 **Codex AI

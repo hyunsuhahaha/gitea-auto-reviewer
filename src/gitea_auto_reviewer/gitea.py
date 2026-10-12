@@ -30,6 +30,8 @@ class PullRequestMetadata:
     base_sha: str
     head_sha: str
     head_repository: str
+    draft: bool = False
+    labels: tuple[str, ...] = ()
 
 
 def _default_transport(request: urllib.request.Request, timeout: float) -> bytes:
@@ -104,7 +106,10 @@ class GiteaClient:
             head_repository = value["head"]["repo"]["full_name"]
             merged = value.get("merged") is True
             merge_commit_sha = value.get("merge_commit_sha")
-        except (KeyError, TypeError) as exc:
+            draft = value.get("draft") is True
+            labels = tuple(item["name"] for item in value.get("labels") or ()
+                           if isinstance(item, dict) and isinstance(item.get("name"), str))
+        except (KeyError, TypeError, AttributeError) as exc:
             raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata") from exc
         if not all(isinstance(item, str) and item for item in (title, base_sha, head_sha, head_repository)):
             raise GiteaAPIError(0, "Gitea returned invalid pull-request metadata")
@@ -115,7 +120,27 @@ class GiteaClient:
             if not isinstance(merge_commit_sha, str) or not merge_commit_sha:
                 raise GiteaAPIError(0, "Gitea returned a merged pull request without a merge commit")
             base_sha, head_sha = self._get_merge_parents(merge_commit_sha)
-        return PullRequestMetadata(pr_number, title, base_sha, head_sha, head_repository)
+        return PullRequestMetadata(pr_number, title, base_sha, head_sha, head_repository, draft, labels)
+
+    def list_changed_files(self, pr_number: int, max_pages: int = 20) -> tuple[str, ...] | None:
+        """Return changed paths, or None when the list is too large or malformed to trust."""
+        if pr_number < 1:
+            raise ValueError("PR number must be positive")
+        paths: list[str] = []
+        for page in range(1, max_pages + 1):
+            files = self._request(
+                "GET", f"/repos/{self.repository}/pulls/{pr_number}/files?limit=50&page={page}",
+            )
+            if not isinstance(files, list):
+                return None
+            for item in files:
+                name = item.get("filename") if isinstance(item, dict) else None
+                if not isinstance(name, str) or not name:
+                    return None
+                paths.append(name)
+            if len(files) < 50:
+                return tuple(paths)
+        return None
 
     def _get_merge_parents(self, sha: str) -> tuple[str, str]:
         value = self._request("GET", f"/repos/{self.repository}/git/commits/{sha}")

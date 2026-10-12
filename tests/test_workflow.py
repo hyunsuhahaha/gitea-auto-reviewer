@@ -37,3 +37,14 @@ def test_workflow_cancels_superseded_reviews_and_bounds_runtime() -> None:
     assert "group: ai-review-${{ gitea.event.inputs.pr_number || gitea.event.pull_request.number }}" in workflow
     assert "cancel-in-progress: true" in workflow
     assert "timeout-minutes:" in workflow
+
+
+def test_workflow_gates_every_review_step_on_skip() -> None:
+    workflow = Path(".gitea/workflows/ai-review.yml").read_text(encoding="utf-8")
+    steps = workflow.split("      - name: ")[1:]
+    gated = [step for step in steps if "steps.metadata.outputs.skip != 'true'" in step]
+    names = [step.splitlines()[0] for step in steps]
+    assert len(gated) == len(steps) - 2
+    assert names[0] == "Resolve PR metadata"
+    assert names[-1] == "Preserve last-run debug artifacts"
+    assert 'if (-not $env:MANUAL_PR_NUMBER) { $skipArgs += "--allow-skip" }' in workflow

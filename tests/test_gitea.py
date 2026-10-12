@@ -158,3 +158,33 @@ def test_authenticated_login_returns_token_owner() -> None:
     client = GiteaClient("https://gitea.example", "owner/repo", "token", transport)
 
     assert client.get_authenticated_login() == "ai-review-bot"
+
+
+def test_get_pull_request_reads_draft_and_labels() -> None:
+    def transport(request, timeout):
+        return json.dumps({
+            "title": "t", "draft": True, "labels": [{"name": "skip-ai-review"}, {"bad": 1}],
+            "base": {"sha": "a" * 40},
+            "head": {"sha": "b" * 40, "repo": {"full_name": "owner/repo"}},
+        }).encode()
+
+    metadata = GiteaClient("https://gitea.example", "owner/repo", "token", transport).get_pull_request(1)
+
+    assert metadata.draft is True
+    assert metadata.labels == ("skip-ai-review",)
+
+
+def test_list_changed_files_paginates_and_gives_up_when_too_large() -> None:
+    pages = []
+
+    def transport(request, timeout):
+        page = int(request.full_url.rsplit("page=", 1)[1])
+        pages.append(page)
+        count = 50 if page == 1 else 1
+        return json.dumps([{"filename": f"f{page}-{index}.py"} for index in range(count)]).encode()
+
+    client = GiteaClient("https://gitea.example", "owner/repo", "token", transport)
+
+    assert len(client.list_changed_files(3)) == 51
+    assert pages == [1, 2]
+    assert client.list_changed_files(3, max_pages=1) is None
