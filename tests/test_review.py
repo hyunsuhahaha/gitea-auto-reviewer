@@ -1,10 +1,12 @@
 import json
+from dataclasses import replace
 
 import pytest
 
 from gitea_auto_reviewer.review import (
     REVIEW_JSON_SCHEMA,
     Review,
+    parse_previous_review,
     preserve_reproduced_findings,
     render_markdown,
     validate_grounding,
@@ -353,3 +355,54 @@ def test_renderer_lists_reproduction_conditions() -> None:
     rendered = render_markdown(Review.from_json(json.dumps(payload)), 1, "a" * 40, "테스트")
 
     assert "재현에 사용한 조건\n      1. 단일 PO 작업지시\n      2. 양품 합계 0\n      3. ERP 일괄전송 실행" in rendered
+
+
+def _reproduced(problem: str, evidence: list[str]) -> dict[str, object]:
+    return {
+        "problem": problem, "impact": f"{problem} 영향", "evidence": evidence,
+        "condition": "조건", "oracle": "기준", "expected": "정상",
+        "observed": "오류", "cleanup_verified": True,
+    }
+
+
+def test_new_push_lists_previously_reproduced_findings_not_seen_again() -> None:
+    payload = impact_payload()
+    payload["reproduced_findings"] = [
+        _reproduced("고쳐진 문제", ["product/models.py:31"]),
+        _reproduced("남은 문제", ["product/services.py:18"]),
+    ]
+    previous = parse_previous_review(
+        render_markdown(Review.from_json(json.dumps(payload)), 95, "a" * 40, "테스트")
+    )
+    payload["reproduced_findings"] = [
+        _reproduced("남은 문제를 다르게 표현", ["product/services.py:18"]),
+        _reproduced("새 문제", ["product/api.py:3"]),
+    ]
+
+    rendered = render_markdown(Review.from_json(json.dumps(payload)), 95, "b" * 40, "테스트", previous)
+
+    assert previous is not None and previous.head_sha == "a" * 40
+    assert "이전 커밋(aaaaaaa)에서 재현됐던 문제" in rendered
+    section = rendered[rendered.index("이전 커밋(aaaaaaa)"):]
+    assert "• 고쳐진 문제" in section and "남은 문제" not in section
+    assert "• [신규] 새 문제" in rendered
+    assert "• 남은 문제를 다르게 표현" in rendered
+
+
+def test_same_sha_rerun_has_no_previous_commit_section() -> None:
+    payload = impact_payload()
+    payload["reproduced_findings"] = [_reproduced("문제", ["product/models.py:31"])]
+    review = Review.from_json(json.dumps(payload))
+    previous = parse_previous_review(render_markdown(review, 95, "a" * 40, "테스트"))
+
+    rendered = render_markdown(replace(review, reproduced_findings=()), 95, "a" * 40, "테스트", previous)
+
+    assert "이전 커밋" not in rendered and "[신규]" not in rendered
+
+
+def test_malformed_previous_state_is_ignored() -> None:
+    assert parse_previous_review(None) is None
+    assert parse_previous_review(f"<!-- gitea-auto-reviewer:pr=1:sha={'a' * 40} -->") is None
+    assert parse_previous_review(
+        f"<!-- gitea-auto-reviewer:pr=1:sha={'a' * 40} -->\n<!-- gitea-auto-reviewer-state:bm90IGpzb24= -->"
+    ) is None

@@ -13,8 +13,8 @@ from .evidence import Evidence, collect_evidence, merge_evidence
 from .git_context import build_prompt, collect_context, validate_sha
 from .gitea import GiteaClient
 from .gitnexus import index_repository
-from .review import (Review, TestResult, preserve_reproduced_findings, render_markdown,
-                     validate_grounding)
+from .review import (Review, TestResult, parse_previous_review, preserve_reproduced_findings,
+                     render_markdown, validate_grounding)
 from .reproduction import (ReproductionEvidence, ReproductionPlan, VerificationDecision,
                            finalize_review, plan_reproductions, run_reproductions,
                            retry_inconclusive_reproductions, verify_reproductions)
@@ -270,9 +270,8 @@ def comment_command(arguments: argparse.Namespace) -> None:
     author = client.get_authenticated_login()
     previous = client.get_review_comment(pr_number, author) if author else None
     review = preserve_reproduced_findings(review, previous, head_sha)
-    action = client.upsert_comment(
-        pr_number, render_markdown(review, pr_number, head_sha, pr_title), author
-    )
+    body = render_markdown(review, pr_number, head_sha, pr_title, parse_previous_review(previous))
+    action = client.upsert_comment(pr_number, body, author)
     print(f"PR comment {action}")
 
 
