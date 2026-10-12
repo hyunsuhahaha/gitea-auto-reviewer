@@ -69,8 +69,8 @@ def test_english_comment_has_no_korean_labels() -> None:
     assert "Rollback check: passed" in body
 
 
-def test_render_defaults_to_english() -> None:
-    assert "Changed files" in render_markdown(_reviewed(), 1, SHA, "t")
+def test_render_defaults_to_korean() -> None:
+    assert "변경 파일" in render_markdown(_reviewed(), 1, SHA, "t")
 
 
 def test_english_finalize_and_comparison_text() -> None:

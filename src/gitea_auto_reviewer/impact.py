@@ -226,7 +226,7 @@ def extract_django(repository: Path, python: str, timeout: int = 300,
 
 
 def build_paths(changed: list[ChangedFunction], django: dict, references: list[OrmReference],
-                runtime: dict | None, ranges: dict[str, list[tuple[int, int]]], language: str = "en") -> list[ImpactPath]:
+                runtime: dict | None, ranges: dict[str, list[tuple[int, int]]], language: str = "ko") -> list[ImpactPath]:
     paths: dict[tuple, ImpactPath] = {}
 
     def add(path: ImpactPath) -> None:
@@ -308,7 +308,7 @@ def build_paths(changed: list[ChangedFunction], django: dict, references: list[O
     return sorted(paths.values(), key=lambda item: (item.kind, item.source, item.target))[:MAX_PATHS]
 
 
-def _access(access: str, language: str = "en") -> str:
+def _access(access: str, language: str = "ko") -> str:
     return text(language, "access_write" if access == "write" else "access_read")
 
 
@@ -329,7 +329,7 @@ def mark_static_misses(paths: list[ImpactPath], static: dict[tuple[str, str], se
 
 def analyze_impact(repository: Path, base_sha: str, head_sha: str, python: str,
                    runtime: dict | None = None, gitnexus=None,
-                   policy: EnvironmentPolicy = EnvironmentPolicy(), language: str = "en") -> dict:
+                   policy: EnvironmentPolicy = EnvironmentPolicy(), language: str = "ko") -> dict:
     """Build the impact document; ``gitnexus`` is a callable(symbol_file, name, direction) or None."""
     repository = repository.resolve()
     actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True,

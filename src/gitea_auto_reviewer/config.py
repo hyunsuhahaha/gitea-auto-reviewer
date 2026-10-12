@@ -26,7 +26,7 @@ _CREDENTIAL_NAME_PARTS = ("TOKEN", "SECRET", "PASSWORD", "PASSWD", "CODEX", "GIT
 
 @dataclass(frozen=True)
 class ReviewConfig:
-    language: str = "en"
+    language: str = "ko"
     first_pass_effort: str = "medium"
     plan_effort: str = "medium"
     verify_effort: str = "low"
