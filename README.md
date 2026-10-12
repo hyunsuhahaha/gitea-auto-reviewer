@@ -356,6 +356,12 @@ gitea-auto-reviewer comment \
 `GITEA_REVIEW_TOKEN`으로 전달할 수도 있습니다. 토큰은 프로세스 목록이나 셸 기록에
 나타나지 않도록 환경 변수로만 받습니다.
 
+게시 직전에 Gitea에서 PR의 현재 head SHA를 다시 조회합니다. 리뷰 도중 새 커밋이
+push되어 head가 바뀌었으면 댓글을 게시하지 않고 종료하므로, 늦게 끝난 이전 실행이
+최신 리뷰를 덮어쓰지 않습니다. 예제 워크플로는 같은 PR의 이전 실행을 취소하는
+`concurrency` 그룹과 120분 `timeout-minutes`도 설정합니다. `concurrency`를 지원하지
+않는 Gitea 버전에서도 head SHA 재확인은 그대로 적용됩니다.
+
 ### 기존 PR 또는 병합된 PR을 수동으로 리뷰하기
 
 예제 워크플로는 `workflow_dispatch`도 지원합니다. Actions 페이지에서 **Codex AI

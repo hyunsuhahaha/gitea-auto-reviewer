@@ -261,6 +261,11 @@ def comment_command(arguments: argparse.Namespace) -> None:
         str(_required(arguments.repository, "repository")),
         str(_required(token, arguments.token_env)),
     )
+    current_head = client.get_pull_request(pr_number).head_sha
+    if current_head != head_sha:
+        # A newer push started its own review; never let this older run overwrite it.
+        print(f"PR head moved to {current_head}; skipped stale review for {head_sha}")
+        return
     review = preserve_reproduced_findings(review, client.get_review_comment(pr_number), head_sha)
     action = client.upsert_comment(
         pr_number, render_markdown(review, pr_number, head_sha, pr_title)

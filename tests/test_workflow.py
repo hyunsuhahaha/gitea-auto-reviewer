@@ -29,3 +29,11 @@ def test_workflow_supports_manual_review_of_existing_pr() -> None:
     assert 'gitea-auto-review*.json' in workflow
     assert 'debug-runs' in workflow
     assert '$env:GITHUB_RUN_ID' in workflow
+
+
+def test_workflow_cancels_superseded_reviews_and_bounds_runtime() -> None:
+    workflow = Path(".gitea/workflows/ai-review.yml").read_text(encoding="utf-8")
+    assert "concurrency:" in workflow
+    assert "group: ai-review-${{ gitea.event.inputs.pr_number || gitea.event.pull_request.number }}" in workflow
+    assert "cancel-in-progress: true" in workflow
+    assert "timeout-minutes:" in workflow

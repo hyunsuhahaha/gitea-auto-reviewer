@@ -21,10 +21,18 @@ defaults:
   run:
     shell: powershell
 
+# A newer push supersedes an in-flight review of the same PR. The comment stage
+# also refuses to publish when the PR head has moved, for Gitea versions that
+# ignore this key.
+concurrency:
+  group: ai-review-${{ gitea.event.inputs.pr_number || gitea.event.pull_request.number }}
+  cancel-in-progress: true
+
 jobs:
   review:
     if: ${{ gitea.event_name == 'workflow_dispatch' || gitea.event.pull_request.head.repo.full_name == gitea.repository }}
     runs-on: ai-review-windows
+    timeout-minutes: 120
     env:
       REVIEWER_EXE: C:\gitea\ai-review\.venv\Scripts\gitea-auto-reviewer.exe
       UV_EXE: C:\gitea\ai-review\.venv\Scripts\uv.exe
