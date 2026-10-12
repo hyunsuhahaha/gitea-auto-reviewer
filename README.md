@@ -173,9 +173,10 @@ Codex는 재현 시나리오(`def reproduce():` 하나만 있는 스크립트)�
 자동 실행은 `metadata --allow-skip`으로 다음 PR을 건너뛰며, 이후 단계는 모두 생략됩니다.
 수동 `workflow_dispatch` 실행은 생략하지 않습니다.
 
-- `skip-ai-review` 라벨이 붙은 PR (`--skip-label`로 변경 가능, 다음 push부터 적용)
-- draft PR 또는 제목이 `WIP:`, `[WIP]`, `WIP `로 시작하는 PR
-- 변경 파일이 모두 `*.md`, `*.rst`, `docs/*`, `LICENSE`인 PR (1,000개 초과 시 제외)
+- `skip-ai-review` 라벨이 붙은 PR (`[skip].label`로 변경 가능, 다음 push부터 적용)
+- draft PR 또는 제목이 `WIP:`, `[WIP]`, `WIP `로 시작하는 PR (`[skip].drafts = false`로 끔)
+- 변경 파일이 모두 `[skip].documentation_paths`(기본 `*.md`, `*.rst`, `docs/*`,
+  `LICENSE`)에 해당하는 PR (1,000개 초과 시 제외)
 
 ## 신뢰 모델
 
@@ -229,18 +230,60 @@ GitNexus CLI, `ai-review-windows` 라벨이 붙은 전용 Gitea 러너.
 4. [`.gitea/workflows/ai-review.yml`](.gitea/workflows/ai-review.yml)을 리뷰 대상
    저장소의 base 브랜치에 복사합니다. 워크플로는 `pull_request_target`으로 base의
    정의를 사용하고, 각 PR마다 새 `.venv-ci`를 만듭니다.
-5. 재현용 테스트 DB 연결은 저장소에 추적되는 설정 파일이나 허용 목록 환경 변수로
-   지정합니다. base worktree에는 추적되지 않는 로컬 설정 파일이 없습니다.
+5. [`examples/ai-review.toml`](examples/ai-review.toml)을 `.ai-review.toml`로 복사해
+   base 브랜치에 커밋합니다. 테스트 DB를 쓰는 Django 설정 모듈, PR 코드에 넘길 환경
+   변수, 재현 전 확인할 안전 스위치 설정을 여기서 지정합니다. base worktree에는 추적되지
+   않는 로컬 설정 파일이 없습니다.
 
-Actions 변수 `AI_REVIEW_FIRST_PASS_EFFORT`, `AI_REVIEW_PLAN_EFFORT`(기본 `medium`),
-`AI_REVIEW_VERIFY_EFFORT`(기본 `low`)로 Codex 추론 수준을 바꿀 수 있습니다. 기존 PR이나
-병합된 PR은 Actions 화면의 `workflow_dispatch`에 PR 번호만 넣어 다시 리뷰할 수 있습니다.
+### `.ai-review.toml`
+
+리뷰어는 이 파일을 **PR의 base 커밋에서만** 읽습니다. PR이 자신의 리뷰 설정을 느슨하게
+바꿀 수 없습니다. 모르는 키, 잘못된 값, 자격 증명처럼 보이는 환경 변수 이름
+(`TOKEN`, `SECRET`, `PASSWORD`, `CODEX`, `GITEA` 등 포함)은 거부합니다.
+
+```toml
+language = "ko"                       # 댓글·Codex 설명 언어: en | ko
+
+[reasoning]                           # low | medium | high
+first_pass = "medium"
+plan = "medium"
+verify = "low"
+repair = "medium"
+
+[skip]
+label = "skip-ai-review"
+drafts = true
+documentation_paths = ["*.md", "*.rst", "docs/*", "LICENSE"]
+
+[django]
+settings_module = "config.settings.ci"   # 테스트 DB를 쓰는 설정
+
+[evidence]
+pass_env = ["DATABASE_URL"]              # PR 코드에 넘길 러너 환경 변수
+
+[reproduction]
+timeout = 180
+
+[reproduction.required_settings]         # 재현 전에 반드시 이 값이어야 하는 설정
+PAYMENT_LIVE_MODE = false
+```
+
+예제 워크플로는 `metadata --config-output`으로 base 커밋의 설정을 한 번 해석해 JSON으로
+저장하고, 이후 단계는 `AI_REVIEW_CONFIG_FILE` 환경 변수로 그 파일을 읽습니다. 로컬에서는
+`gitea-auto-reviewer config --base-sha <SHA>`로 같은 JSON을 만들 수 있습니다. 추론 수준은
+CLI 옵션, Actions 변수(`AI_REVIEW_FIRST_PASS_EFFORT`, `AI_REVIEW_PLAN_EFFORT`,
+`AI_REVIEW_VERIFY_EFFORT`, `AI_REVIEW_REPAIR_EFFORT`), 설정 파일, 기본값 순서로
+적용됩니다. `--require-setting` 옵션은 설정 파일의 값에 더해집니다.
+
+기존 PR이나 병합된 PR은 Actions 화면의 `workflow_dispatch`에 PR 번호만 넣어 다시 리뷰할
+수 있습니다.
 
 ## CLI
 
 | 명령 | 역할 | 주요 옵션 |
 |---|---|---|
-| `metadata` | Gitea에서 PR 번호·제목·base/head SHA 조회, 생략 여부 판단 | `--pr`, `--output-file`, `--allow-skip` |
+| `metadata` | Gitea에서 PR 번호·제목·base/head SHA 조회, 생략 여부 판단 | `--pr`, `--output-file`, `--allow-skip`, `--config-output` |
+| `config` | base 커밋의 `.ai-review.toml`을 JSON으로 해석 | `--base-sha`, `--output` |
 | `index` | head SHA를 GitNexus로 인덱싱 | `--head-sha` |
 | `evidence` | Django check, migration check, pytest 실행 | `--only`, `--trace-output` |
 | `evidence-merge` | 단계별 증거를 하나로 합침 | `--input` (반복) |

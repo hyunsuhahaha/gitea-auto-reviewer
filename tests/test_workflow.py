@@ -63,3 +63,12 @@ def test_workflow_feeds_traced_impact_paths_and_base_sha_into_review_stages() ->
     reproduce = workflow[workflow.index("Reproduce candidate"):workflow.index("Verify reproduced")]
     assert '--base-sha "$env:BASE_SHA"' in plan
     assert '--base-sha "$env:BASE_SHA"' in reproduce
+
+
+def test_workflow_resolves_base_config_once_for_all_steps() -> None:
+    workflow = Path(".gitea/workflows/ai-review.yml").read_text(encoding="utf-8")
+    metadata = workflow[workflow.index("Resolve PR metadata"):workflow.index("Check out exact PR head")]
+    assert '--config-output "$env:CONFIG_FILE"' in metadata
+    assert "AppendAllText($env:GITHUB_ENV" in metadata
+    # Live-integration guards stay in the workflow even when a repository has no config yet.
+    assert '--require-setting "ERP_LIVE_SEND=false"' in workflow

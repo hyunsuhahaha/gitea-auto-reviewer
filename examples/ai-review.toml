@@ -1,0 +1,41 @@
+# Copy to `.ai-review.toml` in the repository under review and commit it to the
+# base branch. The reviewer reads this file from the PR's base commit only, so a
+# pull request cannot loosen its own review settings. Every key is optional.
+
+# Language of the PR comment and of Codex-written explanations: "en" or "ko".
+language = "en"
+
+[reasoning]
+# Codex reasoning effort per stage: "low", "medium", or "high".
+# Actions variables AI_REVIEW_*_EFFORT and CLI options override these.
+first_pass = "medium"
+plan = "medium"
+verify = "low"
+repair = "medium"
+
+[skip]
+# Automatic runs skip PRs with this label, drafts/WIP titles, and PRs whose
+# changed files all match documentation_paths. Manual runs never skip.
+label = "skip-ai-review"
+drafts = true
+documentation_paths = ["*.md", "*.rst", "docs/*", "LICENSE"]
+
+[django]
+# Settings module used for checks, tests, impact extraction, and reproductions.
+# Point it at settings that use a disposable test database.
+# settings_module = "config.settings.ci"
+
+[evidence]
+# Extra runner environment variables passed to PR code (checks, pytest,
+# reproductions). Names containing TOKEN, SECRET, PASSWORD, CODEX, GITEA, ...
+# are rejected so runner credentials never reach PR code.
+# pass_env = ["DATABASE_URL"]
+
+[reproduction]
+# Seconds allowed per reproduction case.
+timeout = 180
+
+[reproduction.required_settings]
+# Django settings that must have these values before any reproduction runs.
+# Use them as safety switches for live integrations.
+# PAYMENT_LIVE_MODE = false

@@ -35,6 +35,7 @@
 ## Project Structure
 
 - `src/gitea_auto_reviewer/cli.py`: orchestration of every pipeline stage (`index` … `comment`).
+- `src/gitea_auto_reviewer/config.py`: strict `.ai-review.toml` parsing; read only from the trusted base commit.
 - `src/gitea_auto_reviewer/evidence.py`: isolated Django/migration/pytest checks and SHA-bound evidence JSON.
 - `src/gitea_auto_reviewer/git_context.py`: trusted-base policy and base-to-head diff collection; review prompts.
 - `src/gitea_auto_reviewer/codex.py`: credential-filtered, read-only Codex CLI wrapper.
@@ -48,6 +49,7 @@
 - `tests/fixtures/shop` (base) and `tests/fixtures/shop_head` (head overlay): sample Django app; `tests/shop_fixture.py` builds the two-commit repo.
 - `.gitea/workflows/ai-review.yml`: Windows Gitea Actions reference workflow.
 - `AI_REVIEW.md`: project-specific review policy consumed from the trusted base commit.
+- `examples/ai-review.toml`: documented sample of every `.ai-review.toml` key.
 
 ## Change Conventions
 

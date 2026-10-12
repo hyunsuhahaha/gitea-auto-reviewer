@@ -17,7 +17,7 @@ import tempfile
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 
-from .evidence import safe_evidence_environment
+from .evidence import EnvironmentPolicy, safe_evidence_environment
 from .git_context import validate_sha
 from .review import ImpactPath, impact_path
 
@@ -202,7 +202,8 @@ def _call_fields(node: ast.Call, method: str) -> set[str]:
     return fields
 
 
-def extract_django(repository: Path, python: str, timeout: int = 300) -> dict:
+def extract_django(repository: Path, python: str, timeout: int = 300,
+                   policy: EnvironmentPolicy = EnvironmentPolicy()) -> dict:
     """Run the Django extractor with the project's interpreter inside the evidence boundary."""
     with tempfile.TemporaryDirectory(prefix="gitea-django-graph-") as directory:
         root = Path(directory)
@@ -210,7 +211,7 @@ def extract_django(repository: Path, python: str, timeout: int = 300) -> dict:
         script.write_text(Path(__file__).with_name("_django_extract.py").read_text(encoding="utf-8"),
                           encoding="utf-8")
         (root / "home").mkdir()
-        environment = safe_evidence_environment(root / "home")
+        environment = safe_evidence_environment(root / "home", policy)
         try:
             result = subprocess.run([python, str(script), str(output)], cwd=repository, env=environment,
                                     capture_output=True, text=True, encoding="utf-8", errors="replace",
@@ -321,7 +322,8 @@ def mark_static_misses(paths: list[ImpactPath], static: dict[tuple[str, str], se
 
 
 def analyze_impact(repository: Path, base_sha: str, head_sha: str, python: str,
-                   runtime: dict | None = None, gitnexus=None) -> dict:
+                   runtime: dict | None = None, gitnexus=None,
+                   policy: EnvironmentPolicy = EnvironmentPolicy()) -> dict:
     """Build the impact document; ``gitnexus`` is a callable(symbol_file, name, direction) or None."""
     repository = repository.resolve()
     actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True,
@@ -332,7 +334,7 @@ def analyze_impact(repository: Path, base_sha: str, head_sha: str, python: str,
     changed = changed_functions(repository, ranges)
     sources = {"runtime": "collected" if runtime else "not_collected"}
     try:
-        django = extract_django(repository, python)
+        django = extract_django(repository, python, policy=policy)
         sources["django"] = "collected" if not django.get("url_error") else f"partial: {django['url_error']}"
     except RuntimeError as exc:
         django, sources["django"] = {"models": [], "signals": [], "urls": []}, f"error: {exc}"[:500]

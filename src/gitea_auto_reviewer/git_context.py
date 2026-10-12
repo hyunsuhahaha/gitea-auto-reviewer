@@ -122,7 +122,7 @@ Evidence priority:
 
 Output rules:
 - Write concise Korean phrases, not paragraphs.
-- Focus on MES/SCM/ERP business impact, regressions, security, DB, API contracts, integrations, deployment, and rollback.
+- Focus on business-data impact, regressions, security, DB, API contracts, external integrations, deployment, and rollback. PROJECT_POLICY names the domain-specific systems to watch.
 - A finding is allowed only for a concrete bug, security problem, performance problem, downstream dependency problem, or an explicit PROJECT_POLICY violation.
 - Never report subjective style, naming, generic maintainability advice, or "this would be better" opinions.
 - Every finding must state only the demonstrated problem or dependency and its concrete operational impact. Do not prescribe a fix, completion state, or generic recommendation. If the impact cannot be stated concretely, omit the finding.

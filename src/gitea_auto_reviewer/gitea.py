@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import json
 import re
 import urllib.error
@@ -152,6 +154,25 @@ class GiteaClient:
                 raise GiteaAPIError(0, "Gitea returned a merged pull request without a merge commit")
             base_sha, head_sha = self._get_merge_parents(merge_commit_sha)
         return PullRequestMetadata(pr_number, title, base_sha, head_sha, head_repository, draft, labels)
+
+    def get_file_text(self, path: str, ref: str) -> str | None:
+        """Return a UTF-8 file at ``ref``, or None when the file does not exist there."""
+        quoted = "/".join(urllib.parse.quote(part, safe="") for part in path.split("/"))
+        try:
+            value = self._request(
+                "GET", f"/repos/{self.repository}/contents/{quoted}?ref={urllib.parse.quote(ref, safe='')}",
+            )
+        except GiteaAPIError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if not isinstance(value, dict) or value.get("type") != "file" or value.get("encoding") != "base64" \
+                or not isinstance(value.get("content"), str):
+            raise GiteaAPIError(0, f"Gitea returned invalid contents for {path}")
+        try:
+            return base64.b64decode(value["content"], validate=False).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError) as exc:
+            raise GiteaAPIError(0, f"Gitea returned undecodable contents for {path}") from exc
 
     def list_changed_files(self, pr_number: int, max_pages: int = 20) -> tuple[str, ...] | None:
         """Return changed paths, or None when the list is too large or malformed to trust."""

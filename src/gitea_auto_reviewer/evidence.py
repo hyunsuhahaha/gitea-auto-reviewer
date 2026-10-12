@@ -16,11 +16,19 @@ from .git_context import validate_sha
 STATUSES = {"pass", "fail", "error", "not_run"}
 TRACE_PLUGIN = "_gitea_auto_reviewer_trace"
 SAFE_ENVIRONMENT_NAMES = {
-    "CI", "COMSPEC", "DJANGO_SETTINGS_MODULE", "LANG", "LC_ALL", "NOX_MES_CI", "NOX_MES_CI_LIVE_PATH",
+    "CI", "COMSPEC", "DJANGO_SETTINGS_MODULE", "LANG", "LC_ALL",
     "PATH", "PATHEXT", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
     "PYTHONIOENCODING", "PYTHONPATH", "PYTHONUTF8", "SSL_CERT_DIR", "SSL_CERT_FILE",
     "SYSTEMROOT", "TEMP", "TMP", "WINDIR",
 }
+
+
+@dataclass(frozen=True)
+class EnvironmentPolicy:
+    """Project-specific additions to the PR-code environment, taken from the base config."""
+
+    pass_env: tuple[str, ...] = ()
+    django_settings_module: str | None = None
 
 
 @dataclass(frozen=True)
@@ -88,14 +96,15 @@ class Evidence:
 
 def collect_evidence(repository: Path, head_sha: str, python: str = "python", timeout: int = 900,
                      only: str | None = None, base_sha: str | None = None,
-                     trace_output: Path | None = None) -> Evidence:
+                     trace_output: Path | None = None,
+                     policy: EnvironmentPolicy = EnvironmentPolicy()) -> Evidence:
     head_sha = validate_sha(head_sha)
     if only not in {None, "django_check", "migration_check", "pytest"}:
         raise ValueError("unknown evidence check")
     if trace_output is not None and not base_sha:
         raise ValueError("runtime call tracing requires the base SHA")
     with tempfile.TemporaryDirectory(prefix="gitea-evidence-") as home:
-        environment = safe_evidence_environment(Path(home))
+        environment = safe_evidence_environment(Path(home), policy)
         try:
             actual_head = subprocess.run(
                 ["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True, text=True,
@@ -169,9 +178,11 @@ def merge_evidence(parts: list[Evidence]) -> Evidence:
     return Evidence(parts[0].head_sha, select("django_check"), select("migration_check"), select("pytest"))
 
 
-def safe_evidence_environment(home: Path) -> dict[str, str]:
-    allowed = {name.upper() for name in SAFE_ENVIRONMENT_NAMES}
+def safe_evidence_environment(home: Path, policy: EnvironmentPolicy = EnvironmentPolicy()) -> dict[str, str]:
+    allowed = {name.upper() for name in (*SAFE_ENVIRONMENT_NAMES, *policy.pass_env)}
     environment = {name: value for name, value in os.environ.items() if name.upper() in allowed}
+    if policy.django_settings_module:
+        environment["DJANGO_SETTINGS_MODULE"] = policy.django_settings_module
     environment.update({name: str(home) for name in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA")})
     # Django's makemigrations opens a real DB connection to check migration-history
     # consistency even with --check --dry-run --noinput. libpq/psycopg honor this to

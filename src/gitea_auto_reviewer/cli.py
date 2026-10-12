@@ -12,8 +12,9 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .codex import assert_logged_in, run_codex_review
+from .config import CONFIG_PATH, ReviewConfig, load_base_config, parse_config
 from .differential import base_worktree, differential_blocker
-from .evidence import Evidence, collect_evidence, merge_evidence
+from .evidence import Evidence, EnvironmentPolicy, collect_evidence, merge_evidence
 from .git_context import build_prompt, collect_context, validate_sha
 from .gitea import GiteaClient, PullRequestMetadata
 from .gitnexus import GitNexusImpact, index_repository
@@ -43,7 +44,14 @@ def build_parser() -> argparse.ArgumentParser:
     metadata.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
     metadata.add_argument("--allow-skip", action="store_true",
                           help="skip draft, labeled, or documentation-only PRs")
-    metadata.add_argument("--skip-label", default="skip-ai-review")
+    metadata.add_argument("--skip-label", help=f"override [skip].label from {CONFIG_PATH}")
+    metadata.add_argument("--config-output", type=Path,
+                          help=f"write the base commit's resolved {CONFIG_PATH} as JSON")
+
+    config = subparsers.add_parser("config", help=f"resolve {CONFIG_PATH} from the trusted base commit")
+    config.add_argument("--base-sha", default=os.getenv("GITEA_BASE_SHA"))
+    config.add_argument("--repo-dir", type=Path, default=Path.cwd())
+    config.add_argument("--output", type=Path, default=Path("ai-review-config.json"))
 
     evidence = subparsers.add_parser("evidence", help="run deterministic checks in isolated CI")
     evidence.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -55,6 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--only", choices=["django_check", "migration_check", "pytest"])
     evidence.add_argument("--trace-output", type=Path,
                           help="record pytest call chains through changed functions (requires --base-sha)")
+    _config_option(evidence)
 
     evidence_merge = subparsers.add_parser("evidence-merge", help="combine SHA-bound check results")
     evidence_merge.add_argument("--input", type=Path, action="append", required=True)
@@ -69,6 +78,7 @@ def build_parser() -> argparse.ArgumentParser:
     impact.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
     impact.add_argument("--skip-gitnexus", action="store_true")
     impact.add_argument("--output", type=Path, default=Path("impact.json"))
+    _config_option(impact)
 
     review = subparsers.add_parser("review", help="create a review.json with Codex")
     review.add_argument("--repository", default=os.getenv("GITEA_REPOSITORY"), required=False)
@@ -83,9 +93,9 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--impact-file", type=Path)
     review.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     review.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
-    review.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
-                        default=_reasoning_effort("AI_REVIEW_FIRST_PASS_EFFORT", "medium"))
+    review.add_argument("--reasoning-effort", choices=EFFORT_CHOICES)
     review.add_argument("--max-diff-bytes", type=int, default=10_000_000)
+    _config_option(review)
 
     plan = subparsers.add_parser("plan", help="ask Codex for rollback-only reproduction cases")
     plan.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -95,8 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     plan.add_argument("--repo-dir", type=Path, default=Path.cwd())
     plan.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     plan.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
-    plan.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
-                      default=_reasoning_effort("AI_REVIEW_PLAN_EFFORT", "medium"))
+    plan.add_argument("--reasoning-effort", choices=EFFORT_CHOICES)
+    _config_option(plan)
 
     reproduce = subparsers.add_parser("reproduce", help="execute reproduction cases with forced rollback")
     reproduce.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -105,14 +115,14 @@ def build_parser() -> argparse.ArgumentParser:
     reproduce.add_argument("--output", type=Path, default=Path("reproduction-evidence.json"))
     reproduce.add_argument("--repo-dir", type=Path, default=Path.cwd())
     reproduce.add_argument("--python", required=True)
-    reproduce.add_argument("--timeout", type=int, default=180)
+    reproduce.add_argument("--timeout", type=int, help="seconds per case (default: config or 180)")
     reproduce.add_argument("--require-setting", action="append", default=[])
     reproduce.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     reproduce.add_argument("--gitnexus-binary", default=os.getenv(
         "GITNEXUS_BINARY", os.getenv("GITNEXUS_EXE", "gitnexus")
     ))
-    reproduce.add_argument("--repair-reasoning-effort", choices=["low", "medium", "high"],
-                           default=_reasoning_effort("AI_REVIEW_REPAIR_EFFORT", "medium"))
+    reproduce.add_argument("--repair-reasoning-effort", choices=EFFORT_CHOICES)
+    _config_option(reproduce)
 
     verify = subparsers.add_parser("verify", help="adversarially verify reproduced findings")
     verify.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -122,10 +132,11 @@ def build_parser() -> argparse.ArgumentParser:
     verify.add_argument("--repo-dir", type=Path, default=Path.cwd())
     verify.add_argument("--codex-binary", default=os.getenv("CODEX_BINARY", "codex"))
     verify.add_argument("--gitnexus-binary", default=os.getenv("GITNEXUS_BINARY", "gitnexus"))
-    verify.add_argument("--reasoning-effort", choices=["low", "medium", "high"],
-                        default=_reasoning_effort("AI_REVIEW_VERIFY_EFFORT", "low"))
+    verify.add_argument("--reasoning-effort", choices=EFFORT_CHOICES)
+    _config_option(verify)
 
-    subparsers.add_parser("reasoning", help="show the configured Codex reasoning efforts")
+    reasoning = subparsers.add_parser("reasoning", help="show the configured Codex reasoning efforts")
+    _config_option(reasoning)
 
     finalize = subparsers.add_parser("finalize", help="publish only rollback-verified findings")
     finalize.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
@@ -142,6 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
     comment.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
     comment.add_argument("--review-file", type=Path, default=Path("review.json"))
     comment.add_argument("--token-env", default="GITEA_REVIEW_TOKEN")
+    _config_option(comment)
 
     feedback = subparsers.add_parser("feedback", help="summarize reactions on recent bot comments")
     feedback.add_argument("--gitea-url", default=os.getenv("GITEA_URL"))
@@ -162,25 +174,49 @@ def _env_int(name: str) -> int | None:
         return None
 
 
-def _reasoning_effort(name: str, fallback: str) -> str:
-    value = os.getenv(name, "").strip().lower() or fallback
-    if value not in {"low", "medium", "high"}:
+EFFORT_CHOICES = ["low", "medium", "high"]
+
+
+def _config_option(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config-file", type=Path, default=_env_path("AI_REVIEW_CONFIG_FILE"),
+                        help="resolved config JSON from `metadata --config-output` or `config`")
+
+
+def _env_path(name: str) -> Path | None:
+    value = os.getenv(name)
+    return Path(value) if value else None
+
+
+def _load_config(arguments: argparse.Namespace) -> ReviewConfig:
+    path = getattr(arguments, "config_file", None)
+    if path is None:
+        return ReviewConfig()
+    return ReviewConfig.from_json(path.read_text(encoding="utf-8"))
+
+
+def _reasoning_effort(name: str, fallback: str, explicit: str | None = None) -> str:
+    """Resolve an effort: CLI option, then the Actions variable, then the base config."""
+    value = explicit or os.getenv(name, "").strip().lower() or fallback
+    if value not in EFFORT_CHOICES:
         raise ValueError(f"{name} must be low, medium, or high")
     return value
 
 
-DOCUMENTATION_PATTERNS = ("*.md", "*.rst", "docs/*", "LICENSE")
+def _environment_policy(config: ReviewConfig) -> EnvironmentPolicy:
+    return EnvironmentPolicy(config.pass_env, config.django_settings_module)
+
+
 WIP_PREFIXES = ("wip:", "[wip]", "wip ")
 
 
 def _skip_reason(metadata: PullRequestMetadata, changed_files: tuple[str, ...] | None,
-                 skip_label: str) -> str | None:
+                 skip_label: str, config: ReviewConfig = ReviewConfig()) -> str | None:
     if skip_label and skip_label in metadata.labels:
         return f"{skip_label} label"
-    if metadata.draft or metadata.title.strip().lower().startswith(WIP_PREFIXES):
+    if config.skip_drafts and (metadata.draft or metadata.title.strip().lower().startswith(WIP_PREFIXES)):
         return "draft pull request"
-    if changed_files and all(
-        any(fnmatch.fnmatchcase(path, pattern) for pattern in DOCUMENTATION_PATTERNS)
+    if changed_files and config.documentation_paths and all(
+        any(fnmatch.fnmatchcase(path, pattern) for pattern in config.documentation_paths)
         for path in changed_files
     ):
         return "documentation-only change"
@@ -229,12 +265,14 @@ def review_command(arguments: argparse.Namespace) -> None:
         "reproduced_findings": [],
         "impact_paths": impact_paths,
     }
+    config = _load_config(arguments)
     result = run_codex_review(
         prompt,
         arguments.repo_dir.resolve(),
         arguments.codex_binary,
         fixed_fields=fixed_fields,
-        reasoning_effort=arguments.reasoning_effort,
+        reasoning_effort=_reasoning_effort("AI_REVIEW_FIRST_PASS_EFFORT", config.first_pass_effort,
+                                           arguments.reasoning_effort),
         gitnexus_binary=arguments.gitnexus_binary,
     )
     validate_grounding(result, arguments.repo_dir.resolve(), context.policy)
@@ -253,6 +291,7 @@ def evidence_command(arguments: argparse.Namespace) -> None:
         arguments.only,
         arguments.base_sha,
         arguments.trace_output,
+        _environment_policy(_load_config(arguments)),
     )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Evidence written to {arguments.output}")
@@ -280,7 +319,8 @@ def impact_command(arguments: argparse.Namespace) -> None:
                 stack.callback(gitnexus.close)
             except RuntimeError as exc:
                 print(f"GitNexus comparison skipped: {exc}", file=sys.stderr)
-        document = analyze_impact(repository, base_sha, head_sha, arguments.python, runtime, gitnexus)
+        document = analyze_impact(repository, base_sha, head_sha, arguments.python, runtime, gitnexus,
+                                  _environment_policy(_load_config(arguments)))
     arguments.output.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     missed = sum(1 for item in document["paths"] if item["static_missed"])
     print(f"Impact paths written to {arguments.output}: {len(document['paths'])} paths, "
@@ -313,9 +353,14 @@ def metadata_command(arguments: argparse.Namespace) -> None:
         "head_sha": validate_sha(metadata.head_sha),
         "head_repository": metadata.head_repository,
     }
+    # Read the config at the base SHA so a pull request cannot loosen its own review settings.
+    config = parse_config(client.get_file_text(CONFIG_PATH, values["base_sha"]))
+    if arguments.config_output is not None:
+        arguments.config_output.write_text(config.to_json() + "\n", encoding="utf-8")
     reason = None
     if arguments.allow_skip:
-        reason = _skip_reason(metadata, client.list_changed_files(metadata.number), arguments.skip_label)
+        label = config.skip_label if arguments.skip_label is None else arguments.skip_label
+        reason = _skip_reason(metadata, client.list_changed_files(metadata.number), label, config)
     values["skip"] = "true" if reason else "false"
     values["skip_reason"] = reason or ""
     with arguments.output_file.open("a", encoding="utf-8") as output:
@@ -323,6 +368,12 @@ def metadata_command(arguments: argparse.Namespace) -> None:
     print(f"Resolved PR #{metadata.number} at {values['head_sha']}")
     if reason:
         print(f"Skipping AI review: {reason}")
+
+
+def config_command(arguments: argparse.Namespace) -> None:
+    config = load_base_config(arguments.repo_dir.resolve(), str(_required(arguments.base_sha, "base SHA")))
+    arguments.output.write_text(config.to_json() + "\n", encoding="utf-8")
+    print(f"Resolved config written to {arguments.output}")
 
 
 def _evidence_tests(evidence: Evidence) -> TestResult:
@@ -408,9 +459,10 @@ def plan_command(arguments: argparse.Namespace) -> None:
     assert_logged_in(arguments.codex_binary)
     blocker = _differential_blocker(arguments.repo_dir.resolve(), arguments.base_sha, head_sha)
     print(f"Differential execution: {'available' if blocker is None else blocker}")
+    config = _load_config(arguments)
+    effort = _reasoning_effort("AI_REVIEW_PLAN_EFFORT", config.plan_effort, arguments.reasoning_effort)
     plan = plan_reproductions(review, head_sha, arguments.repo_dir.resolve(),
-                              arguments.codex_binary, arguments.gitnexus_binary,
-                              arguments.reasoning_effort, blocker)
+                              arguments.codex_binary, arguments.gitnexus_binary, effort, blocker)
     arguments.output.write_text(plan.to_json() + "\n", encoding="utf-8")
     print(f"Reproduction plan written to {arguments.output}")
 
@@ -421,17 +473,25 @@ def reproduce_command(arguments: argparse.Namespace) -> None:
     if plan.head_sha != head_sha:
         raise ValueError("reproduction plan belongs to a different PR head SHA")
     repository = arguments.repo_dir.resolve()
+    config = _load_config(arguments)
+    timeout = config.reproduction_timeout if arguments.timeout is None else arguments.timeout
+    if timeout < 1:
+        raise ValueError("timeout must be positive")
+    required = tuple(dict.fromkeys((*config.required_settings, *arguments.require_setting)))
+    policy = _environment_policy(config)
+    effort = _reasoning_effort("AI_REVIEW_REPAIR_EFFORT", config.repair_effort,
+                               arguments.repair_reasoning_effort)
     needs_base = any(case.mode == "differential" for case in plan.cases)
     blocker = _differential_blocker(repository, arguments.base_sha, head_sha) if needs_base else None
     with contextlib.ExitStack() as stack:
         base = (stack.enter_context(base_worktree(repository, arguments.base_sha, head_sha))
                 if needs_base and blocker is None else None)
-        evidence = run_reproductions(plan, repository, arguments.python, arguments.timeout,
-                                     tuple(arguments.require_setting), base, blocker)
+        evidence = run_reproductions(plan, repository, arguments.python, timeout,
+                                     required, base, blocker, policy)
         evidence = retry_inconclusive_reproductions(
-            plan, evidence, repository, arguments.python, arguments.timeout,
-            tuple(arguments.require_setting), arguments.codex_binary, arguments.gitnexus_binary,
-            arguments.repair_reasoning_effort, base, blocker,
+            plan, evidence, repository, arguments.python, timeout,
+            required, arguments.codex_binary, arguments.gitnexus_binary,
+            effort, base, blocker, policy,
         )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Reproduction evidence written to {arguments.output}")
@@ -463,9 +523,10 @@ def verify_command(arguments: argparse.Namespace) -> None:
     if evidence.head_sha != head_sha:
         raise ValueError("reproduction evidence belongs to a different PR head SHA")
     assert_logged_in(arguments.codex_binary)
+    config = _load_config(arguments)
+    effort = _reasoning_effort("AI_REVIEW_VERIFY_EFFORT", config.verify_effort, arguments.reasoning_effort)
     decision = verify_reproductions(review, evidence, arguments.repo_dir.resolve(),
-                                    arguments.codex_binary, arguments.gitnexus_binary,
-                                    arguments.reasoning_effort)
+                                    arguments.codex_binary, arguments.gitnexus_binary, effort)
     arguments.output.write_text(decision.to_json() + "\n", encoding="utf-8")
     print(f"Verification written to {arguments.output}")
 
@@ -495,10 +556,14 @@ def main(argv: list[str] | None = None) -> int:
             finalize_command(arguments)
         elif arguments.command == "feedback":
             feedback_command(arguments)
+        elif arguments.command == "config":
+            config_command(arguments)
         elif arguments.command == "reasoning":
-            print(f"first-pass={_reasoning_effort('AI_REVIEW_FIRST_PASS_EFFORT', 'medium')}")
-            print(f"plan={_reasoning_effort('AI_REVIEW_PLAN_EFFORT', 'medium')}")
-            print(f"verify={_reasoning_effort('AI_REVIEW_VERIFY_EFFORT', 'low')}")
+            config = _load_config(arguments)
+            print(f"first-pass={_reasoning_effort('AI_REVIEW_FIRST_PASS_EFFORT', config.first_pass_effort)}")
+            print(f"plan={_reasoning_effort('AI_REVIEW_PLAN_EFFORT', config.plan_effort)}")
+            print(f"verify={_reasoning_effort('AI_REVIEW_VERIFY_EFFORT', config.verify_effort)}")
+            print(f"repair={_reasoning_effort('AI_REVIEW_REPAIR_EFFORT', config.repair_effort)}")
         else:
             comment_command(arguments)
         return 0

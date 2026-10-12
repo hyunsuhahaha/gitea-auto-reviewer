@@ -10,9 +10,11 @@ def test_reasoning_defaults_and_environment_overrides(monkeypatch, capsys) -> No
     monkeypatch.delenv("AI_REVIEW_FIRST_PASS_EFFORT", raising=False)
     monkeypatch.delenv("AI_REVIEW_PLAN_EFFORT", raising=False)
     monkeypatch.delenv("AI_REVIEW_VERIFY_EFFORT", raising=False)
+    monkeypatch.delenv("AI_REVIEW_REPAIR_EFFORT", raising=False)
+    monkeypatch.delenv("AI_REVIEW_CONFIG_FILE", raising=False)
     assert main(["reasoning"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "first-pass=medium", "plan=medium", "verify=low",
+        "first-pass=medium", "plan=medium", "verify=low", "repair=medium",
     ]
 
     monkeypatch.setenv("AI_REVIEW_FIRST_PASS_EFFORT", "low")
@@ -20,7 +22,7 @@ def test_reasoning_defaults_and_environment_overrides(monkeypatch, capsys) -> No
     monkeypatch.setenv("AI_REVIEW_VERIFY_EFFORT", "medium")
     assert main(["reasoning"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "first-pass=low", "plan=high", "verify=medium",
+        "first-pass=low", "plan=high", "verify=medium", "repair=medium",
     ]
 
 
@@ -175,6 +177,9 @@ def test_metadata_reports_skip_reason(monkeypatch, tmp_path, title, draft, label
         def list_changed_files(self, pr_number):
             return files
 
+        def get_file_text(self, path, ref):
+            return None
+
     monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
     monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", Client)
 
@@ -196,6 +201,9 @@ def test_metadata_never_skips_without_allow_skip(monkeypatch, tmp_path) -> None:
 
         def list_changed_files(self, pr_number):
             raise AssertionError("manual reviews do not inspect skip rules")
+
+        def get_file_text(self, path, ref):
+            return None
 
     monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
     monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", Client)
@@ -323,3 +331,71 @@ def test_codex_stages_have_no_gitea_token_option(command) -> None:
     subparsers = next(action for action in parser._actions if action.dest == "command")
     options = {option for action in subparsers.choices[command]._actions for option in action.option_strings}
     assert "--token-env" not in options and "--gitea-url" not in options
+
+
+def test_metadata_reads_config_from_base_and_writes_it(monkeypatch, tmp_path) -> None:
+    from gitea_auto_reviewer.config import ReviewConfig
+    from gitea_auto_reviewer.gitea import PullRequestMetadata
+
+    requested = []
+
+    class Client:
+        def __init__(self, *args) -> None:
+            pass
+
+        def get_pull_request(self, pr_number):
+            return PullRequestMetadata(pr_number, "WIP: x", "a" * 40, "b" * 40, "owner/repo", False,
+                                       ("no-ai",))
+
+        def list_changed_files(self, pr_number):
+            return ("app.py",)
+
+        def get_file_text(self, path, ref):
+            requested.append((path, ref))
+            return '[skip]\nlabel = "no-ai"\ndrafts = false\n'
+
+    monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
+    monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", Client)
+    config_file = tmp_path / "config.json"
+
+    assert main(_metadata_args(tmp_path, "--allow-skip", "--config-output", str(config_file))) == 0
+
+    assert requested == [(".ai-review.toml", "a" * 40)]
+    assert _metadata_outputs(tmp_path)["skip_reason"] == "no-ai label"
+    assert ReviewConfig.from_json(config_file.read_text(encoding="utf-8")).skip_drafts is False
+
+
+def test_reproduce_merges_config_settings_and_cli_settings(monkeypatch, tmp_path) -> None:
+    from gitea_auto_reviewer.config import parse_config
+    from gitea_auto_reviewer.evidence import EnvironmentPolicy
+
+    sha = "a" * 40
+    plan_file = tmp_path / "plan.json"
+    plan_file.write_text(json.dumps({"version": 1, "head_sha": sha, "cases": [{
+        "finding_index": 0, "condition": "c", "oracle": "o", "script": "def reproduce():\n    return {}\n",
+    }]}), encoding="utf-8")
+    config_file = tmp_path / "config.json"
+    config_file.write_text(parse_config(
+        '[evidence]\npass_env = ["PROJECT_CI"]\n[reproduction]\ntimeout = 42\n'
+        '[reproduction.required_settings]\nLIVE = false\n'
+    ).to_json(), encoding="utf-8")
+    calls = {}
+    evidence = ReproductionEvidence(sha, (
+        ReproductionResult(0, "refuted", "c", "o", "x", "x", True, 0.1),
+    ))
+
+    def run(plan, repository, python, timeout, required, base, blocker, policy):
+        calls.update(timeout=timeout, required=required, policy=policy)
+        return evidence
+
+    monkeypatch.setattr("gitea_auto_reviewer.cli.run_reproductions", run)
+    monkeypatch.setattr("gitea_auto_reviewer.cli.retry_inconclusive_reproductions",
+                        lambda plan, evidence, *args: evidence)
+
+    assert main(["reproduce", "--head-sha", sha, "--plan-file", str(plan_file), "--python", "python",
+                 "--repo-dir", str(tmp_path), "--output", str(tmp_path / "out.json"),
+                 "--require-setting", "EXTRA=1", "--config-file", str(config_file)]) == 0
+
+    assert calls["timeout"] == 42
+    assert calls["required"] == ("LIVE=false", "EXTRA=1")
+    assert calls["policy"] == EnvironmentPolicy(("PROJECT_CI",), None)

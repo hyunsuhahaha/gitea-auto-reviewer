@@ -14,7 +14,7 @@ from typing import Any
 
 from .codex import run_codex_json
 from .differential import compare_runs, validate_predictions
-from .evidence import safe_evidence_environment
+from .evidence import EnvironmentPolicy, safe_evidence_environment
 from .git_context import validate_sha
 from .review import ReproducedFinding, Review
 
@@ -275,7 +275,7 @@ Each script must contain only imports plus exactly `def reproduce():`, and retur
   cleanup_checks: non-empty list of {{model, lookup, field, equals}} or {{model, lookup, exists}}
   population_label, matching_count, total_count: prevalence data counted from untouched test-DB rows before any reproduction mutation. Return all three whenever ORM can define a defensible natural population and matching condition; omit all three only when it cannot. Never invent counts. These values are informational and never decide whether a finding is confirmed.
 
-The fixed runner, not the script, decides confirmed/refuted by comparing expected and observed after proving that cited target code executed. Never return or calculate a confirmed verdict. The fixed runner supplies django.setup(), transaction.atomic(), forced rollback, a fresh-connection cleanup check, code-reach tracing, and exception handling. Do not manage transactions. Select existing records semantically through ORM; never hard-code database primary keys. Do not write files, spawn processes, use network clients, call ERP, or mutate anything outside the rollback transaction. RequestFactory/SimpleNamespace and direct Django view calls are allowed.
+The fixed runner, not the script, decides confirmed/refuted by comparing expected and observed after proving that cited target code executed. Never return or calculate a confirmed verdict. The fixed runner supplies django.setup(), transaction.atomic(), forced rollback, a fresh-connection cleanup check, code-reach tracing, and exception handling. Do not manage transactions. Select existing records semantically through ORM; never hard-code database primary keys. Do not write files, spawn processes, use network clients, call external systems such as ERP or payment providers, or mutate anything outside the rollback transaction. RequestFactory/SimpleNamespace and direct Django view calls are allowed.
 Use timezone-aware datetimes compatible with the repository settings. Prefer django.utils.timezone.now(); never pass a naive datetime to timezone.localtime() or timezone-aware model logic. The script must reach the candidate's changed business logic rather than failing during fixture construction.
 
 Candidate review JSON:
@@ -337,6 +337,7 @@ def retry_inconclusive_reproductions(
     reasoning_effort: str = "medium",
     base_repository: Path | None = None,
     differential_blocker: str | None = None,
+    policy: EnvironmentPolicy = EnvironmentPolicy(),
 ) -> ReproductionEvidence:
     failed_indexes = {item.finding_index for item in evidence.results if item.status == "inconclusive"}
     if not failed_indexes:
@@ -378,7 +379,7 @@ Failure evidence:
             if item.finding_index in failed_indexes else item for item in evidence.results
         ))
     retried = run_reproductions(repaired, repository, python, timeout, required_settings,
-                                base_repository, differential_blocker)
+                                base_repository, differential_blocker, policy)
     replacements = {
         item.finding_index: replace(item, observed=f"자동 수정 1회 후에도 실패: {item.observed}"[:1000])
         if item.status == "inconclusive" else item
@@ -424,7 +425,8 @@ DIFFERENTIAL_RUNS = 2
 
 def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, timeout: int,
                       required_settings: tuple[str, ...] = (), base_repository: Path | None = None,
-                      differential_blocker: str | None = None) -> ReproductionEvidence:
+                      differential_blocker: str | None = None,
+                      policy: EnvironmentPolicy = EnvironmentPolicy()) -> ReproductionEvidence:
     actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True, text=True, check=True).stdout.strip().lower()
     if actual != plan.head_sha:
         raise ValueError("reproduction checkout does not match the plan head SHA")
@@ -439,7 +441,7 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
             Path(__file__).with_name("_capture.py").read_text(encoding="utf-8"), encoding="utf-8"
         )
         (root / "home").mkdir()
-        environment = _reproduction_environment(root / "home", repository)
+        environment = _reproduction_environment(root / "home", repository, policy)
         for position, case in enumerate(plan.cases):
             case_path = root / f"case-{position}.py"
             case_path.write_text(case.script, encoding="utf-8")
@@ -531,8 +533,9 @@ def _population(payload: dict[str, Any]) -> tuple[str | None, int | None, int | 
     return label.strip(), matching, total
 
 
-def _reproduction_environment(home: Path, repository: Path) -> dict[str, str]:
-    environment = safe_evidence_environment(home)
+def _reproduction_environment(home: Path, repository: Path,
+                              policy: EnvironmentPolicy = EnvironmentPolicy()) -> dict[str, str]:
+    environment = safe_evidence_environment(home, policy)
     if not environment.get("DJANGO_SETTINGS_MODULE"):
         parser = configparser.ConfigParser(interpolation=None)
         parser.read(repository / "pytest.ini", encoding="utf-8")
