@@ -120,3 +120,22 @@ def test_comment_posts_for_current_head(monkeypatch, tmp_path) -> None:
     assert FakeGiteaClient.instances[0].posted[0].startswith(
         f"<!-- gitea-auto-reviewer:pr=7:sha={'a' * 40} -->"
     )
+
+
+def test_comment_ignores_previous_state_when_bot_login_is_unknown(monkeypatch, tmp_path) -> None:
+    FakeGiteaClient.instances.clear()
+    calls = []
+
+    class NoLoginClient(FakeGiteaClient):
+        def get_authenticated_login(self):
+            return None
+
+        def get_review_comment(self, pr_number, author=None):
+            calls.append(author)
+            return super().get_review_comment(pr_number, author)
+
+    monkeypatch.setenv("GITEA_REVIEW_TOKEN", "token")
+    monkeypatch.setattr("gitea_auto_reviewer.cli.GiteaClient", NoLoginClient)
+
+    assert main(_comment_args(_review_file(tmp_path))) == 0
+    assert calls == []

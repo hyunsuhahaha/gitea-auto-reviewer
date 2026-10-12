@@ -266,9 +266,12 @@ def comment_command(arguments: argparse.Namespace) -> None:
         # A newer push started its own review; never let this older run overwrite it.
         print(f"PR head moved to {current_head}; skipped stale review for {head_sha}")
         return
-    review = preserve_reproduced_findings(review, client.get_review_comment(pr_number), head_sha)
+    # Hidden review state is only trusted from the bot's own comment; anyone can copy the marker.
+    author = client.get_authenticated_login()
+    previous = client.get_review_comment(pr_number, author) if author else None
+    review = preserve_reproduced_findings(review, previous, head_sha)
     action = client.upsert_comment(
-        pr_number, render_markdown(review, pr_number, head_sha, pr_title)
+        pr_number, render_markdown(review, pr_number, head_sha, pr_title), author
     )
     print(f"PR comment {action}")
 

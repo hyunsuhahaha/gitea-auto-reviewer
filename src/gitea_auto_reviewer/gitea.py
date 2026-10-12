@@ -60,11 +60,11 @@ class GiteaClient:
         self.transport = transport
         self.timeout = timeout
 
-    def upsert_comment(self, pr_number: int, body: str) -> str:
+    def upsert_comment(self, pr_number: int, body: str, author: str | None = None) -> str:
         if pr_number < 1:
             raise ValueError("PR number must be positive")
         marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:"
-        comment = self._find_comment(pr_number, marker)
+        comment = self._find_comment(pr_number, marker, author)
         if comment is not None:
             try:
                 self._request("PATCH", f"/repos/{self.repository}/issues/comments/{comment[0]}", {"body": body})
@@ -76,9 +76,22 @@ class GiteaClient:
         self._request("POST", f"/repos/{self.repository}/issues/{pr_number}/comments", {"body": body})
         return "created"
 
-    def get_review_comment(self, pr_number: int) -> str | None:
-        comment = self._find_comment(pr_number, f"<!-- gitea-auto-reviewer:pr={pr_number}:")
+    def get_review_comment(self, pr_number: int, author: str | None = None) -> str | None:
+        comment = self._find_comment(pr_number, f"<!-- gitea-auto-reviewer:pr={pr_number}:", author)
         return comment[1] if comment else None
+
+    def get_authenticated_login(self) -> str | None:
+        """Return the token owner's login, or None when the token cannot read it."""
+        try:
+            value = self._request("GET", "/user")
+        except GiteaAPIError as exc:
+            if exc.status in {401, 403}:
+                return None
+            raise
+        login = value.get("login") if isinstance(value, dict) else None
+        if not isinstance(login, str) or not login:
+            raise GiteaAPIError(0, "Gitea returned an invalid authenticated user")
+        return login
 
     def get_pull_request(self, pr_number: int) -> PullRequestMetadata:
         if pr_number < 1:
@@ -115,7 +128,8 @@ class GiteaClient:
             raise GiteaAPIError(0, "Gitea returned invalid merge commit parents")
         return base_sha, head_sha
 
-    def _find_comment(self, pr_number: int, marker: str) -> tuple[int, str] | None:
+    def _find_comment(self, pr_number: int, marker: str,
+                      author: str | None = None) -> tuple[int, str] | None:
         # ponytail: inspect at most 500 comments; add full pagination if real PRs exceed this.
         for page in range(1, 11):
             comments = self._request(
@@ -125,7 +139,8 @@ class GiteaClient:
             if not isinstance(comments, list):
                 raise GiteaAPIError(0, "Gitea returned an invalid comment list")
             for comment in comments:
-                if isinstance(comment, dict) and marker in str(comment.get("body", "")):
+                if (isinstance(comment, dict) and marker in str(comment.get("body", ""))
+                        and (author is None or _comment_author(comment) == author)):
                     identifier = comment.get("id")
                     if isinstance(identifier, int):
                         return identifier, str(comment.get("body", ""))
@@ -158,3 +173,9 @@ class GiteaClient:
             return json.loads(raw)
         except json.JSONDecodeError as exc:
             raise GiteaAPIError(0, "Gitea returned invalid JSON") from exc
+
+
+def _comment_author(comment: dict[str, Any]) -> str | None:
+    user = comment.get("user")
+    login = user.get("login") if isinstance(user, dict) else None
+    return login if isinstance(login, str) else None
