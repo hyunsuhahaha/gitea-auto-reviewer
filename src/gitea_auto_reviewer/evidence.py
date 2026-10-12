@@ -14,6 +14,7 @@ from pathlib import Path
 from .git_context import validate_sha
 
 STATUSES = {"pass", "fail", "error", "not_run"}
+TRACE_PLUGIN = "_gitea_auto_reviewer_trace"
 SAFE_ENVIRONMENT_NAMES = {
     "CI", "COMSPEC", "DJANGO_SETTINGS_MODULE", "LANG", "LC_ALL", "NOX_MES_CI", "NOX_MES_CI_LIVE_PATH",
     "PATH", "PATHEXT", "PROGRAMDATA", "PROGRAMFILES", "PROGRAMFILES(X86)",
@@ -86,10 +87,13 @@ class Evidence:
 
 
 def collect_evidence(repository: Path, head_sha: str, python: str = "python", timeout: int = 900,
-                     only: str | None = None, base_sha: str | None = None) -> Evidence:
+                     only: str | None = None, base_sha: str | None = None,
+                     trace_output: Path | None = None) -> Evidence:
     head_sha = validate_sha(head_sha)
     if only not in {None, "django_check", "migration_check", "pytest"}:
         raise ValueError("unknown evidence check")
+    if trace_output is not None and not base_sha:
+        raise ValueError("runtime call tracing requires the base SHA")
     with tempfile.TemporaryDirectory(prefix="gitea-evidence-") as home:
         environment = safe_evidence_environment(Path(home))
         try:
@@ -113,13 +117,43 @@ def collect_evidence(repository: Path, head_sha: str, python: str = "python", ti
                     [python, "manage.py", "makemigrations", "--check", "--dry-run", "--noinput"],
                     repository, timeout, environment,
                 )
+        pytest_command = [python, "-m", "pytest", "-q", "-p", "no:cacheprovider"]
+        pytest_environment = environment
+        if trace_output is not None and only in {None, "pytest"}:
+            pytest_environment = _trace_environment(repository, Path(home), environment,
+                                                    validate_sha(base_sha), head_sha, trace_output)
+            pytest_command += ["-p", TRACE_PLUGIN]
         return Evidence(head_sha,
             _run([python, "manage.py", "check"], repository, timeout, environment)
             if only in {None, "django_check"} else not_run,
             migration,
-            _run_pytest([python, "-m", "pytest", "-q", "-p", "no:cacheprovider"], repository, timeout, environment)
+            _run_pytest(pytest_command, repository, timeout, pytest_environment)
             if only in {None, "pytest"} else not_run,
         )
+
+
+def _trace_environment(repository: Path, home: Path, environment: dict[str, str], base_sha: str,
+                       head_sha: str, trace_output: Path) -> dict[str, str]:
+    """Load the call-trace pytest plugin from a temporary directory for this run only."""
+    from .impact import changed_ranges
+
+    plugin_dir = home / "trace-plugin"
+    plugin_dir.mkdir()
+    (plugin_dir / f"{TRACE_PLUGIN}.py").write_text(
+        Path(__file__).with_name("_trace_plugin.py").read_text(encoding="utf-8"), encoding="utf-8"
+    )
+    config = plugin_dir / "config.json"
+    config.write_text(json.dumps({
+        "repository": str(repository.resolve()),
+        "changed": changed_ranges(repository, base_sha, head_sha),
+        "output": str(trace_output.resolve()),
+    }), encoding="utf-8")
+    traced = dict(environment)
+    traced["PYTHONPATH"] = os.pathsep.join(
+        item for item in (str(plugin_dir), environment.get("PYTHONPATH", "")) if item
+    )
+    traced["GITEA_AUTO_REVIEWER_TRACE"] = str(config)
+    return traced
 
 
 def merge_evidence(parts: list[Evidence]) -> Evidence:

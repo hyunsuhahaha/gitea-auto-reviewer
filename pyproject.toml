@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gitea-auto-reviewer"
-version = "0.2.1"
-description = "A secure Codex CLI to self-hosted Gitea PR review bridge"
+version = "0.3.0"
+description = "Django data-integrity and change-impact PR reviewer for self-hosted Gitea"
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
@@ -13,7 +13,7 @@ authors = [{ name = "gitea-auto-reviewer contributors" }]
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "django>=4.2"]
 
 [project.scripts]
 gitea-auto-reviewer = "gitea_auto_reviewer.cli:main"
@@ -24,3 +24,5 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+# tests/fixtures holds sample Django projects with their own conftest and tests.
+norecursedirs = [".*", "build", "dist", "*.egg", "venv", ".venv", "fixtures"]
