@@ -7,6 +7,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .messages import language_name, text
+
 DEFAULT_POLICY = "No project-specific policy is defined. Apply the built-in review priorities."
 SHA_PATTERN = re.compile(r"[0-9a-fA-F]{40}(?:[0-9a-fA-F]{24})?")
 
@@ -78,7 +80,9 @@ def _git(repository: Path, arguments: list[str], required: bool) -> str:
 
 
 def build_prompt(context: ReviewContext, repository_name: str, pr_number: int, pr_title: str,
-                 evidence_json: str, impact_json: str | None = None) -> str:
+                 evidence_json: str, impact_json: str | None = None, language: str = "en") -> str:
+    output_language = language_name(language)
+    more_changes = text(language, "more_changes", count="N")
     impact_rules = "" if impact_json is None else """
 - IMPACT_PATHS was computed deterministically from the Django app registry (signal receivers, URL routes, model fields), string-based ORM field references, and pytest call traces for this exact head SHA. A path marked static_missed=true is absent from the GitNexus call graph. Treat every path as a verified lead: follow it in the repository when judging data-flow regressions, and use its files for affected_files when the path is operationally meaningful."""
     impact_block = "" if impact_json is None else f"""
@@ -86,7 +90,7 @@ def build_prompt(context: ReviewContext, repository_name: str, pr_number: int, p
 {impact_json}
 </IMPACT_PATHS>
 """
-    return f"""Create a compact change-impact summary in Korean for pull request #{pr_number} ({pr_title}) in {repository_name}.
+    return f"""Create a compact change-impact summary in {output_language} for pull request #{pr_number} ({pr_title}) in {repository_name}.
 
 Repository access:
 - The current working directory is the complete PR head repository. Inspect it read-only to trace callers, serializers, models, migrations, integrations, deployment configuration, and tests related to the diff.
@@ -121,7 +125,7 @@ Evidence priority:
 5. Generic best practice, which must not be reported by itself.
 
 Output rules:
-- Write concise Korean phrases, not paragraphs.
+- Write concise {output_language} phrases, not paragraphs.
 - Focus on business-data impact, regressions, security, DB, API contracts, external integrations, deployment, and rollback. PROJECT_POLICY names the domain-specific systems to watch.
 - A finding is allowed only for a concrete bug, security problem, performance problem, downstream dependency problem, or an explicit PROJECT_POLICY violation.
 - Never report subjective style, naming, generic maintainability advice, or "this would be better" opinions.
@@ -133,7 +137,7 @@ Output rules:
 - Every finding must cite one or more verified repo-relative file:line references. Do not guess line numbers.
 - Use an empty list when there is no concrete, PR-relevant evidence. Silence is better than filler, generic advice, or repetition.
 - key_changes must describe every distinct material repository behavior change, not merely the five most important ones. Do not repeat CI check results there.
-- When there are at most 10 material changes, include all of them. When there are more than 10, include the 9 most important changes and use the final item exactly as `그 외 관련 변경 N건`, where N is the number omitted.
+- When there are at most 10 material changes, include all of them. When there are more than 10, include the 9 most important changes and use the final item exactly as `{more_changes}`, where N is the number omitted.
 - Use not_detected, never a definitive "none", when no direct DB, API-contract, or external-integration impact was found.
 - When database_change is yes or possible, database_change_details must name the concrete table/model and operation: table creation/removal, column addition/removal/type/null/default/index/constraint change, or data migration. Cite the migration or model file:line for every item. When not_detected, use an empty list.
 - database_change means schema only. Do not classify changes to values stored in existing columns, query filters, grouping, classification, or write timing as schema changes.

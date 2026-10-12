@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .git_context import validate_sha
+from .messages import text
 
 DEPENDENCY_FILES = re.compile(
     r"(^|/)(requirements[^/]*\.txt|pyproject\.toml|setup\.py|setup\.cfg|Pipfile(\.lock)?|poetry\.lock|uv\.lock)$"
@@ -21,7 +22,7 @@ MISSING_ENTRYPOINT_ERRORS = ("ImportError", "ModuleNotFoundError")
 MAX_DIFFERENCES = 10
 
 
-def differential_blocker(repository: Path, base_sha: str, head_sha: str) -> str | None:
+def differential_blocker(repository: Path, base_sha: str, head_sha: str, language: str = "en") -> str | None:
     """Return why base/head cannot share one venv and test DB, or None when they can."""
     try:
         result = subprocess.run(
@@ -34,10 +35,10 @@ def differential_blocker(repository: Path, base_sha: str, head_sha: str) -> str 
     paths = [line.strip().replace("\\", "/") for line in result.stdout.splitlines() if line.strip()]
     migrations = [path for path in paths if "/migrations/" in f"/{path}" and path.endswith(".py")]
     if migrations:
-        return f"마이그레이션 변경 PR이라 같은 테스트 DB에서 base와 비교할 수 없음: {migrations[0]}"
+        return text(language, "blocker_migration", path=migrations[0])
     dependencies = [path for path in paths if DEPENDENCY_FILES.search(path)]
     if dependencies:
-        return f"의존성 파일 변경 PR이라 같은 venv에서 base를 실행할 수 없음: {dependencies[0]}"
+        return text(language, "blocker_dependency", path=dependencies[0])
     return None
 
 
@@ -97,29 +98,33 @@ class Fact:
     note: str = ""
 
 
-def outcome_facts(outcome: dict) -> dict[tuple, Fact]:
+def outcome_facts(outcome: dict, language: str = "en") -> dict[tuple, Fact]:
     """Flatten one captured run into keyed facts with run-specific identifiers normalized away."""
     facts: dict[tuple, Fact] = {}
+    none, zero = text(language, "fact_none"), text(language, "fact_count", count=0)
     exception = outcome.get("exception")
-    facts[("exception",)] = Fact(None, "exception", "예외", exception or "없음")
+    facts[("exception",)] = Fact(None, "exception", text(language, "fact_exception"), exception or none)
     if exception is None:
-        facts[("result",)] = Fact(None, "result", "반환값", _canonical(outcome.get("result")))
+        facts[("result",)] = Fact(None, "result", text(language, "fact_result"), _canonical(outcome.get("result")))
     for change in outcome.get("changes", []):
         model, pk = change["model"], change["pk"]
         short = model.rsplit(".", 1)[-1]
         volatile = set(change.get("volatile", ())) | {pk}
         created = change.get("created", [])
-        facts[(model, "created_count")] = Fact(model, None, f"{short} 생성", f"{len(created)}건")
+        facts[(model, "created_count")] = Fact(model, None, text(language, "fact_created", model=short),
+                                               text(language, "fact_count", count=len(created)))
         for index, row in enumerate(created, start=1):
             for name, value in row.items():
                 if name in volatile:
                     continue
                 facts[(model, "created", index, name)] = Fact(
-                    model, name, f"{short}[신규#{index}].{name}", _canonical(value)
+                    model, name, text(language, "fact_new_row", model=short, index=index, field=name),
+                    _canonical(value),
                 )
         for row in change.get("deleted", []):
             facts[(model, "deleted", _canonical(row.get(pk)))] = Fact(
-                model, None, f"{short}(pk={row.get(pk)}) 삭제", "삭제됨"
+                model, None, text(language, "fact_deleted_row", model=short, pk=row.get(pk)),
+                text(language, "fact_deleted"),
             )
         for item in change.get("updated", []):
             for name, value in item["after"].items():
@@ -139,13 +144,13 @@ def outcome_facts(outcome: dict) -> dict[tuple, Fact]:
         for attname, target in change.get("foreign_keys", {}).items():
             for key, fact in list(facts.items()):
                 if key[0] == change["model"] and fact.field == attname:
-                    raw = json.loads(fact.value) if fact.value not in {"", "없음"} else None
+                    raw = json.loads(fact.value) if fact.value not in {"", none} else None
                     placeholder = created_ids.get((target, raw))
                     if placeholder:
                         facts[key] = Fact(fact.model, fact.field, fact.label, placeholder, fact.before)
     # Summarize the first created row on its count fact; the note is display-only, never compared.
     for key, fact in list(facts.items()):
-        if len(key) == 2 and key[1] == "created_count" and fact.value != "0건":
+        if len(key) == 2 and key[1] == "created_count" and fact.value != zero:
             fields = [f"{item.field}={item.value}" for row_key, item in facts.items()
                       if row_key[:3] == (key[0], "created", 1)]
             facts[key] = Fact(fact.model, fact.field, fact.label, fact.value, note=", ".join(fields)[:150])
@@ -165,13 +170,15 @@ class Comparison:
     ignored_fields: int
 
 
-def compare_runs(base_runs: list[dict], head_runs: list[dict], predictions: tuple[str, ...]) -> Comparison:
+def compare_runs(base_runs: list[dict], head_runs: list[dict], predictions: tuple[str, ...],
+                 language: str = "en") -> Comparison:
     """Decide confirmed/refuted/inconclusive from repeated base and head captures."""
     for exception in (run.get("exception") or "" for run in base_runs):
         if exception.split(":", 1)[0] in MISSING_ENTRYPOINT_ERRORS:
-            return Comparison("inconclusive", f"base에 시나리오 진입점이 없음: {exception}"[:1000], (), (), 0)
-    base_facts = [outcome_facts(run) for run in base_runs]
-    head_facts = [outcome_facts(run) for run in head_runs]
+            return Comparison("inconclusive", text(language, "missing_entrypoint", error=exception)[:1000],
+                              (), (), 0)
+    base_facts = [outcome_facts(run, language) for run in base_runs]
+    head_facts = [outcome_facts(run, language) for run in head_runs]
     noisy = _noisy_keys(base_facts) | _noisy_keys(head_facts)
     base, head = base_facts[0], head_facts[0]
     base_rows = {key[:3] for key in base if len(key) == 4}
@@ -180,34 +187,34 @@ def compare_runs(base_runs: list[dict], head_runs: list[dict], predictions: tupl
     for key in sorted(set(base) | set(head), key=lambda item: json.dumps(item, default=str)):
         if key in noisy:
             continue
-        # A row created on only one side is already described by its "생성 N건" line.
+        # A row created on only one side is already described by its "<model> created N" line.
         if len(key) == 4 and key[1] == "created" and (key[:3] in base_rows) != (key[:3] in head_rows):
             continue
-        before, after = _side(base, key, head), _side(head, key, base)
+        before, after = _side(base, key, head, language), _side(head, key, base, language)
         if before is not None and after is not None and before.value == after.value:
             continue
         differences.append((before, after))
     predicted, unpredicted = [], []
     for before, after in differences:
         fact = after or before
-        line = _difference_line(fact, before, after)
+        line = _difference_line(fact, before, after, language)
         (predicted if _matches(fact, predictions) else unpredicted).append(line)
     predicted, unpredicted = predicted[:MAX_DIFFERENCES], unpredicted[:MAX_DIFFERENCES]
     if not differences:
-        return Comparison("refuted", "base와 head의 DB 변경·반환값·예외가 모두 같음", (), (), len(noisy))
+        return Comparison("refuted", text(language, "runs_identical"), (), (), len(noisy))
     if predicted:
-        summary = "base 대비 예측한 차이 관찰: " + "; ".join(predicted[:3])
+        summary = text(language, "predicted_difference") + "; ".join(predicted[:3])
         return Comparison("confirmed", summary[:1000], tuple(predicted), tuple(unpredicted), len(noisy))
-    summary = "예측한 위치의 차이는 없고 다른 차이만 관찰: " + "; ".join(unpredicted[:3])
+    summary = text(language, "unpredicted_only") + "; ".join(unpredicted[:3])
     return Comparison("refuted", summary[:1000], (), tuple(unpredicted), len(noisy))
 
 
-def _side(facts: dict[tuple, Fact], key: tuple, other: dict[tuple, Fact]) -> Fact | None:
+def _side(facts: dict[tuple, Fact], key: tuple, other: dict[tuple, Fact], language: str = "en") -> Fact | None:
     """A table the other run wrote but this run did not counts as zero created rows."""
     if key in facts or len(key) != 2 or key[1] != "created_count":
         return facts.get(key)
     fact = other[key]
-    return Fact(fact.model, fact.field, fact.label, "0건")
+    return Fact(fact.model, fact.field, fact.label, text(language, "fact_count", count=0))
 
 
 def _noisy_keys(runs: list[dict[tuple, Fact]]) -> set[tuple]:
@@ -249,10 +256,10 @@ def _field_name(name: str) -> str:
     return name[:-3] if name.endswith("_id") else name
 
 
-def _difference_line(fact: Fact, before: Fact | None, after: Fact | None) -> str:
+def _difference_line(fact: Fact, before: Fact | None, after: Fact | None, language: str = "en") -> str:
     def side(item: Fact | None) -> str:
         if item is None:
-            return "변경 없음" if (before or after).before is not None else "없음"
+            return text(language, "fact_unchanged" if (before or after).before is not None else "fact_none")
         if item.before is not None:
             return f"{item.before} → {item.value}"
         return f"{item.value} ({item.note})" if item.note else item.value

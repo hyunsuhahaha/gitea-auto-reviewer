@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+from .messages import text
+
 FIELDS = {
     "changed_files",
     "changed_file_paths",
@@ -648,7 +650,10 @@ def validate_verification(draft: Review, verified: Review) -> None:
 
 
 def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str,
-                    previous: PreviousReview | None = None) -> str:
+                    previous: PreviousReview | None = None, language: str = "en") -> str:
+    def t(key: str, **values: object) -> str:
+        return text(language, key, **values)
+
     title = " ".join(pr_title.split())[:120]
     if previous is not None and previous.head_sha == head_sha:
         previous = None
@@ -674,59 +679,48 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
     top = f"┌{'─' * width}┐"
     middle = f"├{'─' * width}┤"
     heading_line = f"│ {heading}{' ' * (width - _display_width(heading) - 1)}│"
+    impact_value = {"yes": "impact_yes", "changed": "impact_changed", "affected": "impact_affected",
+                    "possible": "impact_possible", "not_detected": "impact_not_detected"}
+    data_value = {**impact_value, "changed": "impact_yes"}
     lines = [
         top,
         heading_line,
         middle,
         "",
-        _row("변경 파일", f"{review.changed_files}개"),
+        _row(t("changed_files"), t("file_count", count=review.changed_files)),
         *(f"  └ {path}" for path in review.changed_file_paths),
-        _row("DB 스키마 변경", {"yes": "있음", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.database_change]),
+        _row(t("database_change"), t(impact_value[review.database_change])),
         *(f"  └ {item.description} — {', '.join(item.evidence)}" for item in review.database_change_details),
-        _row("데이터 처리 변경", {"changed": "있음", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.data_change]),
+        _row(t("data_change"), t(data_value[review.data_change])),
         *(f"  └ {item.description} — {', '.join(item.evidence)}" for item in review.data_change_details),
-        _row(
-            "API Contract",
-            {"changed": "변경", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[review.api_contract],
-        ),
-        _row(
-            "외부연동",
-            {"affected": "영향 있음", "not_detected": "직접 영향 미발견", "possible": "영향 가능"}[
-                review.external_integration
-            ],
-        ),
+        _row(t("api_contract"), t(impact_value[review.api_contract])),
+        _row(t("external_integration"), t(impact_value[review.external_integration])),
         *(
             [f"  └ {review.external_integration_reason} — {', '.join(review.external_integration_evidence)}"]
             if review.external_integration_reason else []
         ),
         "",
-        "검증된 사실",
+        t("verified_facts"),
         f"{_status_icon(review.django_check)} Django check {_status_text(review.django_check)}",
-        f"{_status_icon(review.migration)} Migration check {_migration_text(review.migration)}",
-        f"{_status_icon(review.tests.status)} 테스트(pytest) {_test_text(review.tests)}",
+        f"{_status_icon(review.migration)} Migration check {_migration_text(review.migration, language)}",
+        f"{_status_icon(review.tests.status)} {t('tests')} {_test_text(review.tests)}",
         "",
-        _row("위험도", {"low": "🟢 LOW", "medium": "🟡 MEDIUM", "high": "🟠 HIGH"}[review.risk]
-             + f" · 근거 {review.risk_confidence.upper()}"),
+        _row(t("risk"), {"low": "🟢 LOW", "medium": "🟡 MEDIUM", "high": "🟠 HIGH"}[review.risk]
+             + f" · {t('risk_basis')} {review.risk_confidence.upper()}"),
         *[f"  └ {reference}" for reference in review.risk_evidence],
         "",
-        "주요 변경",
+        t("key_changes"),
         *[f"• {item}" for item in review.key_changes],
         "",
-        *(_reproduced_finding_section(review.reproduced_findings, new_findings)
-          if review.reproduced_findings else ["", "재현된 문제", "  • 확정된 재현 문제 없음"]),
-        *(_previous_finding_section(resolved, previous.head_sha) if previous and resolved else []),
-        *(_finding_section(
-            unreproduced,
-            "재현하지 못한 발견 사항",
-            "※ 미실행, 실행 오류·시간초과·코드 미도달 또는 실행상 현상 미관찰",
-        ) if unreproduced else []),
-        *(_finding_section(
-            verification_rejected,
-            "재현 성공 후 2차 검증 미채택",
-            "※ DB 재현·코드 도달·롤백 검증은 성공했으나 2차 검증에서 미채택",
-        ) if verification_rejected else []),
-        *(_impact_path_section(review.impact_paths) if review.impact_paths else []),
-        *(_affected_file_section(review.affected_files) if review.affected_files else []),
+        *(_reproduced_finding_section(review.reproduced_findings, new_findings, language)
+          if review.reproduced_findings else ["", t("reproduced"), f"  • {t('no_reproduced')}"]),
+        *(_previous_finding_section(resolved, previous.head_sha, language) if previous and resolved else []),
+        *(_finding_section(unreproduced, t("unreproduced"), t("unreproduced_note"), language)
+          if unreproduced else []),
+        *(_finding_section(verification_rejected, t("rejected"), t("rejected_note"), language)
+          if verification_rejected else []),
+        *(_impact_path_section(review.impact_paths, language) if review.impact_paths else []),
+        *(_affected_file_section(review.affected_files, language) if review.affected_files else []),
     ]
     marker = f"<!-- gitea-auto-reviewer:pr={pr_number}:sha={head_sha} -->"
     state = base64.b64encode(json.dumps({
@@ -737,37 +731,41 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
     return f"{marker}\n<!-- gitea-auto-reviewer-state:{state} -->\n\n```text\n" + "\n".join(lines).rstrip() + "\n```"
 
 
-def _finding_section(findings: tuple[Finding, ...], title: str, note: str) -> list[str]:
+def _evidence_paths(evidence: tuple[str, ...]) -> list[str]:
+    return [f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in evidence)]
+
+
+def _finding_section(findings: tuple[Finding, ...], title: str, note: str, language: str) -> list[str]:
     lines = [title, note]
     for finding in findings:
         if len(lines) > 2:
             lines.append("")
         lines.append(f"  • {finding.problem}")
-        lines.append(f"    영향: {finding.impact}")
+        lines.append(f"    {text(language, 'impact')}: {finding.impact}")
         if finding.reproduction_status == "verification_rejected":
-            lines.append(f"    미채택 사유: {finding.reproduction_detail}")
+            lines.append(f"    {text(language, 'rejection_reason')}: {finding.reproduction_detail}")
         elif finding.reproduction_status:
-            label = {
-                "unplanned": "미실행",
-                "inconclusive": "실행 불확정",
-                "not_reproduced": "실행상 미재현",
-            }[finding.reproduction_status]
-            lines.append(f"    재현 결과: {label} — {finding.reproduction_detail}")
+            label = text(language, f"status_{finding.reproduction_status}")
+            lines.append(f"    {text(language, 'reproduction_result')}: {label} — {finding.reproduction_detail}")
         if finding.policy_quote:
-            lines.append(f'    규칙: "{finding.policy_quote}"')
-        lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
+            lines.append(f'    {text(language, "policy_rule")}: "{finding.policy_quote}"')
+        lines.extend(_evidence_paths(finding.evidence))
     return ["", *lines]
 
 
 def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...],
-                                new_findings: tuple[ReproducedFinding, ...] = ()) -> list[str]:
-    lines = ["재현된 문제"]
+                                new_findings: tuple[ReproducedFinding, ...] = (),
+                                language: str = "en") -> list[str]:
+    def t(key: str, **values: object) -> str:
+        return text(language, key, **values)
+
+    lines = [t("reproduced")]
     for finding in findings:
         if len(lines) > 1:
             lines.append("")
-        lines.append(f"  • {'[신규] ' if finding in new_findings else ''}{finding.problem}")
-        lines.append(f"    영향: {finding.impact}")
-        lines.append("    재현에 사용한 조건")
+        lines.append(f"  • {t('new_marker') if finding in new_findings else ''}{finding.problem}")
+        lines.append(f"    {t('impact')}: {finding.impact}")
+        lines.append(f"    {t('conditions')}")
         lines.extend(f"      {index}. {condition}" for index, condition in enumerate(
             (line.strip() for line in finding.condition.splitlines() if line.strip()), start=1
         ))
@@ -775,55 +773,53 @@ def _reproduced_finding_section(findings: tuple[ReproducedFinding, ...],
                 and finding.total_count is not None):
             rate = finding.matching_count / finding.total_count * 100
             lines.append(
-                f"    버그 조건 충족률: {finding.population_label} "
-                f"{finding.matching_count:,}/{finding.total_count:,}건 ({rate:.2f}%)"
+                f"    {t('condition_rate')}: {finding.population_label} "
+                f"{finding.matching_count:,}/{finding.total_count:,}{t('rows')} ({rate:.2f}%)"
             )
         if finding.mode == "differential":
-            lines.append("    base·head 차분 실행 (각 2회, 실행마다 달라지는 값 제외)")
+            lines.append(f"    {t('differential_runs')}")
             lines.extend(f"      {line}" for line in finding.predicted_differences)
             if finding.other_differences:
-                lines.append("    그 밖의 base 대비 차이")
+                lines.append(f"    {t('other_differences')}")
                 lines.extend(f"      {line}" for line in finding.other_differences)
         else:
-            lines.append(f"    관찰 결과: {finding.observed}")
+            lines.append(f"    {t('observed')}: {finding.observed}")
         if finding.reached_targets:
-            lines.append(f"    실행 도달: {', '.join(finding.reached_targets)}")
-        lines.append("    롤백 검증: 통과")
-        lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
+            lines.append(f"    {t('reached')}: {', '.join(finding.reached_targets)}")
+        lines.append(f"    {t('rollback_passed')}")
+        lines.extend(_evidence_paths(finding.evidence))
     return ["", *lines]
 
 
-def _previous_finding_section(findings: tuple[ReproducedFinding, ...], head_sha: str) -> list[str]:
-    lines = ["", f"이전 커밋({head_sha[:7]})에서 재현됐던 문제",
-             "※ 이번 커밋의 재현 결과에서 같은 문제가 확인되지 않음 — 수정됐거나 재현 경로가 달라졌을 수 있음"]
+def _previous_finding_section(findings: tuple[ReproducedFinding, ...], head_sha: str,
+                              language: str = "en") -> list[str]:
+    lines = ["", text(language, "previous_commit", sha=head_sha[:7]), text(language, "previous_commit_note")]
     for finding in findings:
         if len(lines) > 3:
             lines.append("")
         lines.append(f"  • {finding.problem}")
-        lines.append(f"    영향: {finding.impact}")
-        lines.extend(f"    └ {path}" for path in dict.fromkeys(ref.rpartition(":")[0] for ref in finding.evidence))
+        lines.append(f"    {text(language, 'impact')}: {finding.impact}")
+        lines.extend(_evidence_paths(finding.evidence))
     return lines
 
 
-def _impact_path_section(paths: tuple[ImpactPath, ...]) -> list[str]:
+def _impact_path_section(paths: tuple[ImpactPath, ...], language: str = "en") -> list[str]:
     ordered = sorted(paths, key=lambda item: (item.static_missed is not True, item.kind, item.source, item.target))
     shown = ordered[:MAX_RENDERED_IMPACT_PATHS]
     compared = any(item.static_missed is not None for item in paths)
-    lines = ["", "영향 경로", "※ Django 구조·ORM 필드 참조·pytest 실행 추적으로 찾은 경로"
-             + (" · ⚠ GitNexus 정적 그래프에 없는 경로" if compared else "")]
-    labels = {"signal": "signal", "orm_field": "ORM 필드", "url": "URL",
-              "runtime_caller": "실행 호출자", "runtime_callee": "실행 피호출자"}
+    lines = ["", text(language, "impact_paths"),
+             text(language, "impact_paths_note") + (text(language, "impact_paths_missed") if compared else "")]
     for item in shown:
         marker = " ⚠" if item.static_missed else ""
-        lines.append(f"  • [{labels[item.kind]}] {item.source} → {item.target}{marker}")
+        lines.append(f"  • [{text(language, f'path_{item.kind}')}] {item.source} → {item.target}{marker}")
         lines.append(f"      {item.detail} — {item.evidence}")
     if len(ordered) > len(shown):
-        lines.append(f"  • 그 외 영향 경로 {len(ordered) - len(shown)}건")
+        lines.append(f"  • {text(language, 'more_paths', count=len(ordered) - len(shown))}")
     return lines
 
 
-def _affected_file_section(files: tuple[AffectedFile, ...]) -> list[str]:
-    lines = ["", "영향 파일"]
+def _affected_file_section(files: tuple[AffectedFile, ...], language: str = "en") -> list[str]:
+    lines = ["", text(language, "affected_files")]
     for item in files:
         lines.append(f"• {item.path}")
         lines.append(f"  └ {item.reason} — {', '.join(item.evidence)}")
@@ -853,5 +849,7 @@ def _status_text(status: str) -> str:
     return status.upper().replace("_", " ")
 
 
-def _migration_text(status: str) -> str:
-    return {"no_missing": "누락 없음", "missing": "누락 감지", "error": "ERROR", "not_run": "NOT RUN"}[status]
+def _migration_text(status: str, language: str = "en") -> str:
+    if status in {"no_missing", "missing"}:
+        return text(language, f"migration_{status}")
+    return {"error": "ERROR", "not_run": "NOT RUN"}[status]

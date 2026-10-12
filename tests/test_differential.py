@@ -1,3 +1,4 @@
+import functools
 import json
 import sqlite3
 import sys
@@ -21,6 +22,14 @@ from gitea_auto_reviewer.reproduction import (
 from gitea_auto_reviewer.review import Review, render_markdown
 from shop_fixture import _git, make_shop_repository
 from test_review import impact_payload
+
+# These tests pin the Korean output; English output is covered in test_messages.py.
+build_plan_prompt = functools.partial(build_plan_prompt, language="ko")
+compare_runs = functools.partial(compare_runs, language="ko")
+differential_blocker = functools.partial(differential_blocker, language="ko")
+finalize_review = functools.partial(finalize_review, language="ko")
+render_markdown = functools.partial(render_markdown, language="ko")
+run_reproductions = functools.partial(run_reproductions, language="ko")
 
 ORDER_SCRIPT = """from shop.models import Product
 from shop.services import place_order

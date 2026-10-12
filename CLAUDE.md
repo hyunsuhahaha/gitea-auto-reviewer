@@ -40,6 +40,7 @@
 - `src/gitea_auto_reviewer/git_context.py`: trusted-base policy and base-to-head diff collection; review prompts.
 - `src/gitea_auto_reviewer/codex.py`: credential-filtered, read-only Codex CLI wrapper.
 - `src/gitea_auto_reviewer/review.py`: review schema, validation, grounding, verification, and Markdown rendering.
+- `src/gitea_auto_reviewer/messages.py`: every user-visible string in each supported language (`en`, `ko`); add new text here, never inline.
 - `src/gitea_auto_reviewer/gitea.py`: minimal Gitea issue-comment client with marker-based upsert.
 - `src/gitea_auto_reviewer/gitnexus.py`: GitNexus indexing, Codex MCP config, and a direct STDIO MCP `impact` client.
 - `src/gitea_auto_reviewer/reproduction.py`: reproduction plan/evidence schemas, runner source, assert and differential verdicts.

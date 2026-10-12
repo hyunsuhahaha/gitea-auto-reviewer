@@ -79,7 +79,7 @@ def test_review_prompt_requires_boundary_and_caller_analysis() -> None:
         "changed_file_paths": ("domain/range.py",),
     })()
 
-    prompt = build_prompt(context, "owner/repo", 1, "boundary", "{}")
+    prompt = build_prompt(context, "owner/repo", 1, "boundary", "{}", language="ko")
 
     assert "equality, null, minimum, maximum" in prompt
     assert "follow that new state through callers" in prompt

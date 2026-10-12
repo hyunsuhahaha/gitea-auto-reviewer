@@ -15,6 +15,7 @@ from typing import Any
 from .codex import run_codex_json
 from .differential import compare_runs, validate_predictions
 from .evidence import EnvironmentPolicy, safe_evidence_environment
+from .messages import language_name, text
 from .git_context import validate_sha
 from .review import ReproducedFinding, Review
 
@@ -196,7 +197,8 @@ class VerificationDecision:
     rejected_findings: tuple[VerificationRejection, ...] = ()
 
     @classmethod
-    def from_json(cls, raw: str, evidence: ReproductionEvidence) -> "VerificationDecision":
+    def from_json(cls, raw: str, evidence: ReproductionEvidence,
+                  language: str = "en") -> "VerificationDecision":
         value = json.loads(raw)
         required = {"version", "head_sha", "accepted_finding_indices", "rejected_findings"}
         if not isinstance(value, dict) or set(value) != required or value["version"] != 1:
@@ -218,10 +220,10 @@ class VerificationDecision:
                     or len(item["reason"].strip()) > 1000):
                 raise ValueError("invalid reproduction rejection reasons")
             reason = item["reason"].strip()
-            if (not any("가" <= char <= "힣" for char in reason)
-                    or reason.lower() in {"insufficient evidence", "증거가 불충분함",
-                                          "재현 결과가 문제와 영향을 입증하기에 불충분함"}):
-                raise ValueError("rejection reason must be concrete Korean text")
+            written = (any("가" <= char <= "힣" for char in reason) if language == "ko"
+                       else any(char.isascii() and char.isalpha() for char in reason))
+            if not written or reason.lower().rstrip(".") in GENERIC_REJECTIONS:
+                raise ValueError(f"rejection reason must be concrete {language_name(language)} text")
             parsed_rejections.append(VerificationRejection(
                 item["finding_index"], reason
             ))
@@ -242,6 +244,9 @@ class VerificationDecision:
                           ensure_ascii=False, indent=2)
 
 
+GENERIC_REJECTIONS = {"insufficient evidence", "not enough evidence", "증거가 불충분함",
+                      "재현 결과가 문제와 영향을 입증하기에 불충분함"}
+
 DIFFERENTIAL_PROMPT = """
 Prefer mode `differential` for every data-integrity finding. In differential mode the fixed runner executes the same script twice against the trusted base commit and twice against the PR head, records every row the scenario inserts, updates, or deletes before the forced rollback, drops values that differ between identical runs, and compares base with head. Therefore:
 - Call only entry points that exist with the same import path in both base and head, and build fixtures that are valid in both.
@@ -257,7 +262,8 @@ Use mode `assert` and an empty `predicted_changes` for every case. Base/head dif
 
 
 def build_plan_prompt(review: Review, head_sha: str,
-                      differential_blocker: str | None = "base SHA가 제공되지 않음") -> str:
+                      differential_blocker: str | None = "base SHA was not provided",
+                      language: str = "en") -> str:
     mode_rules = (DIFFERENTIAL_PROMPT if differential_blocker is None
                   else ASSERT_ONLY_PROMPT.format(reason=differential_blocker))
     return f"""You are planning rollback-only reproductions for candidate code-review findings.
@@ -266,7 +272,7 @@ The repository is already checked out at PR head {head_sha}. Inspect it, includi
 Return one case for every finding that can be objectively reproduced by importing Django and directly calling ORM/service/view code against the configured test database. Skip subjective, destructive, external-network, browser-only, or schema-incompatible cases.
 `finding_index` is the zero-based position in the candidate review's `findings` array. Return at most one case for each finding and never invent an index outside that array.
 
-Write user-visible explanations such as `condition` and `oracle` in Korean. Return `expected` and `observed` as exact JSON-compatible business values rather than explanatory prose; keep code identifiers and concrete values unchanged. Write `condition` as 1-6 concise, unnumbered lines describing the minimal generalized data state and final action required for the bug; never combine them into a paragraph. Do not present arbitrary fixture values chosen by the reproduction script as required conditions. Omit exact quantities, IDs, dates, and ratios unless that exact value or boundary is causally required for the bug. Put chosen example values and calculations only in `observed`.
+Write user-visible explanations such as `condition` and `oracle` in {language_name(language)}. Return `expected` and `observed` as exact JSON-compatible business values rather than explanatory prose; keep code identifiers and concrete values unchanged. Write `condition` as 1-6 concise, unnumbered lines describing the minimal generalized data state and final action required for the bug; never combine them into a paragraph. Do not present arbitrary fixture values chosen by the reproduction script as required conditions. Omit exact quantities, IDs, dates, and ratios unless that exact value or boundary is causally required for the bug. Put chosen example values and calculations only in `observed`.
 
 {mode_rules}
 Each script must contain only imports plus exactly `def reproduce():`, and return a JSON-compatible dict:
@@ -285,10 +291,12 @@ Candidate review JSON:
 
 def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_binary: str,
                        gitnexus_binary: str, reasoning_effort: str = "medium",
-                       differential_blocker: str | None = "base SHA가 제공되지 않음") -> ReproductionPlan:
+                       differential_blocker: str | None = "base SHA was not provided",
+                       language: str = "en") -> ReproductionPlan:
     if not review.findings:
         return ReproductionPlan(validate_sha(head_sha), ())
-    raw = run_codex_json(build_plan_prompt(review, head_sha, differential_blocker), PLAN_SCHEMA, repository, codex_binary,
+    raw = run_codex_json(build_plan_prompt(review, head_sha, differential_blocker, language), PLAN_SCHEMA,
+                         repository, codex_binary,
                          fixed_fields={"version": 1, "head_sha": head_sha}, reasoning_effort=reasoning_effort,
                          gitnexus_binary=gitnexus_binary)
     plan = ReproductionPlan.from_json(raw, len(review.findings))
@@ -303,7 +311,7 @@ def plan_reproductions(review: Review, head_sha: str, repository: Path, codex_bi
 
 def verify_reproductions(review: Review, evidence: ReproductionEvidence, repository: Path,
                          codex_binary: str, gitnexus_binary: str,
-                         reasoning_effort: str = "low") -> VerificationDecision:
+                         reasoning_effort: str = "low", language: str = "en") -> VerificationDecision:
     confirmed = [item for item in evidence.results
                  if item.status == "confirmed" and item.cleanup_verified and item.target_reached]
     if not confirmed:
@@ -311,7 +319,7 @@ def verify_reproductions(review: Review, evidence: ReproductionEvidence, reposit
     prompt = f"""You are the second, adversarial verification pass for code-review findings.
 Only the candidate findings listed in the reproduction evidence were executed against the test database.
 For mode `differential`, the runner executed the same script against base and head and recorded `predicted_differences` (base/head differences at the places the plan predicted) and `other_differences`; reject when those differences are explained by the PR's intended behavior rather than the candidate problem.
-For each confirmed result, inspect its executed reproduction script, the repository, and GitNexus again and try to disprove that the observed result supports the exact candidate problem and impact. Reject a result when observed is fabricated, is not derived from the reached target call or resulting DB state, or the target call is unrelated to the oracle. Accept an index only when the oracle is objective, expected and observed are genuinely comparable, the observation demonstrates that exact problem, target execution and cleanup were verified, and no concrete code path invalidates the conclusion. Never add, rewrite, or accept an unconfirmed finding. Put every confirmed index in exactly one of accepted_finding_indices or rejected_findings. For every rejection, write a concrete Korean reason naming the missing or contradictory evidence; never use a generic phrase such as "insufficient evidence".
+For each confirmed result, inspect its executed reproduction script, the repository, and GitNexus again and try to disprove that the observed result supports the exact candidate problem and impact. Reject a result when observed is fabricated, is not derived from the reached target call or resulting DB state, or the target call is unrelated to the oracle. Accept an index only when the oracle is objective, expected and observed are genuinely comparable, the observation demonstrates that exact problem, target execution and cleanup were verified, and no concrete code path invalidates the conclusion. Never add, rewrite, or accept an unconfirmed finding. Put every confirmed index in exactly one of accepted_finding_indices or rejected_findings. For every rejection, write a concrete {language_name(language)} reason naming the missing or contradictory evidence; never use a generic phrase such as "insufficient evidence".
 
 Candidate review:
 {review.to_json()}
@@ -322,7 +330,7 @@ Reproduction evidence:
     raw = run_codex_json(prompt, VERIFICATION_SCHEMA, repository, codex_binary,
                          fixed_fields={"version": 1, "head_sha": evidence.head_sha},
                          reasoning_effort=reasoning_effort, gitnexus_binary=gitnexus_binary)
-    return VerificationDecision.from_json(raw, evidence)
+    return VerificationDecision.from_json(raw, evidence, language)
 
 
 def retry_inconclusive_reproductions(
@@ -338,6 +346,7 @@ def retry_inconclusive_reproductions(
     base_repository: Path | None = None,
     differential_blocker: str | None = None,
     policy: EnvironmentPolicy = EnvironmentPolicy(),
+    language: str = "en",
 ) -> ReproductionEvidence:
     failed_indexes = {item.finding_index for item in evidence.results if item.status == "inconclusive"}
     if not failed_indexes:
@@ -364,7 +373,7 @@ Failure evidence:
     except (RuntimeError, ValueError) as exc:
         return ReproductionEvidence(evidence.head_sha, tuple(
             replace(item, observed=(
-                f"{item.observed}; 자동 수정 실패: {type(exc).__name__}: {exc}"
+                f"{item.observed}; " + text(language, "repair_failed", error=f"{type(exc).__name__}: {exc}")
             )[:1000]) if item.finding_index in failed_indexes else item
             for item in evidence.results
         ))
@@ -375,13 +384,14 @@ Failure evidence:
     ))
     if not repaired.cases:
         return ReproductionEvidence(evidence.head_sha, tuple(
-            replace(item, observed=f"{item.observed}; 자동 수정 계획 없음"[:1000])
+            replace(item, observed=f"{item.observed}; {text(language, 'repair_unplanned')}"[:1000])
             if item.finding_index in failed_indexes else item for item in evidence.results
         ))
     retried = run_reproductions(repaired, repository, python, timeout, required_settings,
-                                base_repository, differential_blocker, policy)
+                                base_repository, differential_blocker, policy, language)
     replacements = {
-        item.finding_index: replace(item, observed=f"자동 수정 1회 후에도 실패: {item.observed}"[:1000])
+        item.finding_index: replace(item, observed=text(language, "repair_still_failing",
+                                                        detail=item.observed)[:1000])
         if item.status == "inconclusive" else item
         for item in retried.results
     }
@@ -426,12 +436,13 @@ DIFFERENTIAL_RUNS = 2
 def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, timeout: int,
                       required_settings: tuple[str, ...] = (), base_repository: Path | None = None,
                       differential_blocker: str | None = None,
-                      policy: EnvironmentPolicy = EnvironmentPolicy()) -> ReproductionEvidence:
+                      policy: EnvironmentPolicy = EnvironmentPolicy(),
+                      language: str = "en") -> ReproductionEvidence:
     actual = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repository, capture_output=True, text=True, check=True).stdout.strip().lower()
     if actual != plan.head_sha:
         raise ValueError("reproduction checkout does not match the plan head SHA")
     if base_repository is None and differential_blocker is None:
-        differential_blocker = "base 체크아웃이 제공되지 않음"
+        differential_blocker = text(language, "no_base_checkout")
     results: list[ReproductionResult] = []
     with tempfile.TemporaryDirectory(prefix="gitea-reproduce-") as directory:
         root = Path(directory)
@@ -442,6 +453,8 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
         )
         (root / "home").mkdir()
         environment = _reproduction_environment(root / "home", repository, policy)
+        runner_messages = {key: text(language, f"runner_{key}")
+                           for key in ("target_unreached", "no_targets", "no_values")}
         for position, case in enumerate(plan.cases):
             case_path = root / f"case-{position}.py"
             case_path.write_text(case.script, encoding="utf-8")
@@ -451,11 +464,12 @@ def run_reproductions(plan: ReproductionPlan, repository: Path, python: str, tim
                 return _execute_case(python, runner, case_path, root / f"result-{position}-{name}.json",
                                      checkout, environment, timeout, required_settings, case.target_evidence,
                                      {"capture": capture, "capture_dir": str(root),
-                                      "capture_module": CAPTURE_MODULE, "require_target": require_target})
+                                      "capture_module": CAPTURE_MODULE, "require_target": require_target,
+                                      "messages": runner_messages})
 
             if case.mode == "differential":
                 results.append(_differential_result(case, execute, repository, base_repository,
-                                                    differential_blocker, started))
+                                                    differential_blocker, started, language))
                 continue
             payload = execute(repository, "head", False, True)
             status = payload["status"]
@@ -492,33 +506,38 @@ def _execute_case(python: str, runner: Path, case_path: Path, output_path: Path,
 
 
 def _differential_result(case: ReproductionCase, execute, repository: Path, base_repository: Path | None,
-                         differential_blocker: str | None, started: float) -> ReproductionResult:
+                         differential_blocker: str | None, started: float,
+                         language: str = "en") -> ReproductionResult:
     """Run the scenario twice on head and base, then let the fixed comparator decide."""
     def result(status: str, observed: str, cleanup: bool, head: dict[str, Any] | None = None,
                predicted: tuple[str, ...] = (), other: tuple[str, ...] = ()) -> ReproductionResult:
         head = head or {}
         return ReproductionResult(
-            case.finding_index, status, case.condition, case.oracle, "base 실행 결과와 동일", observed[:1000],
+            case.finding_index, status, case.condition, case.oracle, text(language, "same_as_base"),
+            observed[:1000],
             cleanup, round(time.monotonic() - started, 3), *_population(head),
             head.get("target_reached") is True, tuple(head.get("reached_targets", ())), case.script,
             "differential", predicted, other,
         )
 
     if differential_blocker is not None or base_repository is None:
-        return result("inconclusive", f"base·head 차분 실행 불가: {differential_blocker}", False)
+        return result("inconclusive", text(language, "differential_unavailable", reason=differential_blocker),
+                      False)
     heads = [execute(repository, f"head-{run}", True, True) for run in range(DIFFERENTIAL_RUNS)]
     failed = next((item for item in heads if item["status"] != "captured"), None)
     if failed is not None:
-        return result("inconclusive", f"head 실행 실패: {failed.get('observed', '')}", False, failed)
+        return result("inconclusive", text(language, "head_failed", detail=failed.get("observed", "")),
+                      False, failed)
     bases = [execute(base_repository, f"base-{run}", True, False) for run in range(DIFFERENTIAL_RUNS)]
     failed = next((item for item in bases if item["status"] != "captured"), None)
     if failed is not None:
-        return result("inconclusive", f"base 실행 실패: {failed.get('observed', '')}", False, heads[0])
+        return result("inconclusive", text(language, "base_failed", detail=failed.get("observed", "")),
+                      False, heads[0])
     cleanup = all(item.get("cleanup_verified") is True for item in (*heads, *bases))
     if not cleanup:
-        return result("inconclusive", "롤백 후 DB 복원을 확인하지 못함", False, heads[0])
+        return result("inconclusive", text(language, "rollback_unverified"), False, heads[0])
     comparison = compare_runs([item["outcome"] for item in bases], [item["outcome"] for item in heads],
-                              case.predicted_changes)
+                              case.predicted_changes, language)
     return result(comparison.status, comparison.summary, True, heads[0],
                   comparison.predicted, comparison.unpredicted)
 
@@ -552,7 +571,7 @@ def _complete_evidence(plan: ReproductionPlan, results: list[ReproductionResult]
 
 
 def finalize_review(review: Review, evidence: ReproductionEvidence,
-                    decision: VerificationDecision | None = None) -> Review:
+                    decision: VerificationDecision | None = None, language: str = "en") -> Review:
     accepted = (set(decision.accepted_finding_indices) if decision is not None else
                 {item.finding_index for item in evidence.results
                  if item.status == "confirmed" and item.cleanup_verified and item.target_reached})
@@ -582,16 +601,16 @@ def finalize_review(review: Review, evidence: ReproductionEvidence,
             continue
         result = results.get(index)
         if result is None:
-            status, detail = "unplanned", "현재 Django/ORM 롤백 재현 범위에서 계획되지 않음"
+            status, detail = "unplanned", text(language, "detail_unplanned")
         elif result.status == "confirmed" and not result.target_reached:
-            status, detail = "inconclusive", "변경 근거 코드 도달이 확인되지 않음"
+            status, detail = "inconclusive", text(language, "detail_target_unreached")
         elif result.status == "confirmed":
             status = "verification_rejected"
-            detail = rejection_reasons.get(index, "2차 검증 미채택 사유가 기록되지 않음")
+            detail = rejection_reasons.get(index, text(language, "detail_no_rejection_reason"))
         elif result.status == "refuted":
-            status, detail = "not_reproduced", result.observed or "조건 실행에서 문제를 관찰하지 못함"
+            status, detail = "not_reproduced", result.observed or text(language, "detail_not_observed")
         else:
-            status, detail = "inconclusive", result.observed or "실행 결과를 판정하지 못함"
+            status, detail = "inconclusive", result.observed or text(language, "detail_undecided")
         static_findings.append(replace(finding, reproduction_status=status,
                                        reproduction_detail=detail[:1000]))
     if confirmed or static_findings:
@@ -611,6 +630,9 @@ try:
     sys.path.insert(0, str(Path.cwd()))
     options = json.loads(sys.argv[5]) if len(sys.argv) > 5 else {}
     capture = options.get("capture") is True
+    messages = options.get("messages") or {"target_unreached": "did not reach the changed code: ",
+                                           "no_targets": "no executable Python target evidence",
+                                           "no_values": "no expected/observed values"}
     import django
     django.setup()
     from django.apps import apps
@@ -692,7 +714,7 @@ try:
     if recorder is not None:
         status, observed = "captured", "captured"
         if options.get("require_target") and not target_reached:
-            status, observed = "inconclusive", "변경 근거 코드에 도달하지 못함: " + ", ".join(sorted(targets))
+            status, observed = "inconclusive", messages["target_unreached"] + ", ".join(sorted(targets))
         write({"status": status, "observed": observed, "cleanup_verified": cleanup,
                "target_reached": target_reached, "reached_targets": sorted(reached),
                "outcome": {"result": capture_module.json_value(result.get("observed")),
@@ -701,11 +723,11 @@ try:
         sys.exit(0)
     has_values = "expected" in result and "observed" in result
     if not targets:
-        status, observed = "inconclusive", "실행 가능한 Python target evidence가 없음"
+        status, observed = "inconclusive", messages["no_targets"]
     elif not target_reached:
-        status, observed = "inconclusive", "변경 근거 코드에 도달하지 못함: " + ", ".join(sorted(targets))
+        status, observed = "inconclusive", messages["target_unreached"] + ", ".join(sorted(targets))
     elif not has_values:
-        status, observed = "inconclusive", "expected/observed 관찰값이 없음"
+        status, observed = "inconclusive", messages["no_values"]
     else:
         status, observed = ("confirmed" if result["expected"] != result["observed"] else "refuted",
                             str(result["observed"]))

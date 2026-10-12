@@ -384,7 +384,7 @@ def test_reproduce_merges_config_settings_and_cli_settings(monkeypatch, tmp_path
         ReproductionResult(0, "refuted", "c", "o", "x", "x", True, 0.1),
     ))
 
-    def run(plan, repository, python, timeout, required, base, blocker, policy):
+    def run(plan, repository, python, timeout, required, base, blocker, policy, language):
         calls.update(timeout=timeout, required=required, policy=policy)
         return evidence
 

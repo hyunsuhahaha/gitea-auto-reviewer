@@ -18,6 +18,7 @@ from .evidence import Evidence, EnvironmentPolicy, collect_evidence, merge_evide
 from .git_context import build_prompt, collect_context, validate_sha
 from .gitea import GiteaClient, PullRequestMetadata
 from .gitnexus import GitNexusImpact, index_repository
+from .messages import text
 from .impact import analyze_impact, load_paths
 from .review import (Review, TestResult, parse_previous_review, preserve_reproduced_findings,
                      render_markdown, validate_grounding)
@@ -144,6 +145,7 @@ def build_parser() -> argparse.ArgumentParser:
     finalize.add_argument("--reproduction-file", type=Path, required=True)
     finalize.add_argument("--verification-file", type=Path, required=True)
     finalize.add_argument("--output", type=Path, default=Path("review.json"))
+    _config_option(finalize)
 
     comment = subparsers.add_parser("comment", help="validate and post a review.json")
     comment.add_argument("--gitea-url", default=os.getenv("GITEA_URL"))
@@ -253,7 +255,9 @@ def review_command(arguments: argparse.Namespace) -> None:
     if arguments.impact_file is not None:
         impact_json = arguments.impact_file.read_text(encoding="utf-8")
         impact_paths = [asdict(item) for item in load_paths(impact_json, context.head_sha)]
-    prompt = build_prompt(context, repository, pr_number, pr_title, evidence.to_json(), impact_json)
+    config = _load_config(arguments)
+    prompt = build_prompt(context, repository, pr_number, pr_title, evidence.to_json(), impact_json,
+                          config.language)
     fixed_fields = {
         "changed_files": context.changed_files,
         "changed_file_paths": list(context.changed_file_paths),
@@ -265,7 +269,6 @@ def review_command(arguments: argparse.Namespace) -> None:
         "reproduced_findings": [],
         "impact_paths": impact_paths,
     }
-    config = _load_config(arguments)
     result = run_codex_review(
         prompt,
         arguments.repo_dir.resolve(),
@@ -319,8 +322,9 @@ def impact_command(arguments: argparse.Namespace) -> None:
                 stack.callback(gitnexus.close)
             except RuntimeError as exc:
                 print(f"GitNexus comparison skipped: {exc}", file=sys.stderr)
+        config = _load_config(arguments)
         document = analyze_impact(repository, base_sha, head_sha, arguments.python, runtime, gitnexus,
-                                  _environment_policy(_load_config(arguments)))
+                                  _environment_policy(config), config.language)
     arguments.output.write_text(json.dumps(document, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     missed = sum(1 for item in document["paths"] if item["static_missed"])
     print(f"Impact paths written to {arguments.output}: {len(document['paths'])} paths, "
@@ -405,7 +409,8 @@ def comment_command(arguments: argparse.Namespace) -> None:
     author = client.get_authenticated_login()
     previous = client.get_review_comment(pr_number, author) if author else None
     review = preserve_reproduced_findings(review, previous, head_sha)
-    body = render_markdown(review, pr_number, head_sha, pr_title, parse_previous_review(previous))
+    body = render_markdown(review, pr_number, head_sha, pr_title, parse_previous_review(previous),
+                           _load_config(arguments).language)
     action = client.upsert_comment(pr_number, body, author)
     print(f"PR comment {action}")
 
@@ -457,12 +462,13 @@ def plan_command(arguments: argparse.Namespace) -> None:
     head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
     review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
     assert_logged_in(arguments.codex_binary)
-    blocker = _differential_blocker(arguments.repo_dir.resolve(), arguments.base_sha, head_sha)
-    print(f"Differential execution: {'available' if blocker is None else blocker}")
     config = _load_config(arguments)
+    blocker = _differential_blocker(arguments.repo_dir.resolve(), arguments.base_sha, head_sha, config.language)
+    print(f"Differential execution: {'available' if blocker is None else blocker}")
     effort = _reasoning_effort("AI_REVIEW_PLAN_EFFORT", config.plan_effort, arguments.reasoning_effort)
     plan = plan_reproductions(review, head_sha, arguments.repo_dir.resolve(),
-                              arguments.codex_binary, arguments.gitnexus_binary, effort, blocker)
+                              arguments.codex_binary, arguments.gitnexus_binary, effort, blocker,
+                              config.language)
     arguments.output.write_text(plan.to_json() + "\n", encoding="utf-8")
     print(f"Reproduction plan written to {arguments.output}")
 
@@ -482,37 +488,42 @@ def reproduce_command(arguments: argparse.Namespace) -> None:
     effort = _reasoning_effort("AI_REVIEW_REPAIR_EFFORT", config.repair_effort,
                                arguments.repair_reasoning_effort)
     needs_base = any(case.mode == "differential" for case in plan.cases)
-    blocker = _differential_blocker(repository, arguments.base_sha, head_sha) if needs_base else None
+    blocker = (_differential_blocker(repository, arguments.base_sha, head_sha, config.language)
+               if needs_base else None)
     with contextlib.ExitStack() as stack:
         base = (stack.enter_context(base_worktree(repository, arguments.base_sha, head_sha))
                 if needs_base and blocker is None else None)
         evidence = run_reproductions(plan, repository, arguments.python, timeout,
-                                     required, base, blocker, policy)
+                                     required, base, blocker, policy, config.language)
         evidence = retry_inconclusive_reproductions(
             plan, evidence, repository, arguments.python, timeout,
             required, arguments.codex_binary, arguments.gitnexus_binary,
-            effort, base, blocker, policy,
+            effort, base, blocker, policy, config.language,
         )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Reproduction evidence written to {arguments.output}")
 
 
-def _differential_blocker(repository: Path, base_sha: str | None, head_sha: str) -> str | None:
+def _differential_blocker(repository: Path, base_sha: str | None, head_sha: str,
+                          language: str = "en") -> str | None:
     if not base_sha:
-        return "base SHA가 제공되지 않음"
-    return differential_blocker(repository, base_sha, head_sha)
+        return text(language, "no_base_sha")
+    return differential_blocker(repository, base_sha, head_sha, language)
 
 
 def finalize_command(arguments: argparse.Namespace) -> None:
     head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
     review = Review.from_json(arguments.review_file.read_text(encoding="utf-8"))
     evidence = ReproductionEvidence.from_json(arguments.reproduction_file.read_text(encoding="utf-8"))
-    decision = VerificationDecision.from_json(arguments.verification_file.read_text(encoding="utf-8"), evidence)
+    language = _load_config(arguments).language
+    decision = VerificationDecision.from_json(arguments.verification_file.read_text(encoding="utf-8"), evidence,
+                                              language)
     if evidence.head_sha != head_sha:
         raise ValueError("reproduction evidence belongs to a different PR head SHA")
     if decision.head_sha != head_sha:
         raise ValueError("verification belongs to a different PR head SHA")
-    arguments.output.write_text(finalize_review(review, evidence, decision).to_json() + "\n", encoding="utf-8")
+    arguments.output.write_text(finalize_review(review, evidence, decision, language).to_json() + "\n",
+                                encoding="utf-8")
     print(f"Final review written to {arguments.output}")
 
 
@@ -526,7 +537,7 @@ def verify_command(arguments: argparse.Namespace) -> None:
     config = _load_config(arguments)
     effort = _reasoning_effort("AI_REVIEW_VERIFY_EFFORT", config.verify_effort, arguments.reasoning_effort)
     decision = verify_reproductions(review, evidence, arguments.repo_dir.resolve(),
-                                    arguments.codex_binary, arguments.gitnexus_binary, effort)
+                                    arguments.codex_binary, arguments.gitnexus_binary, effort, config.language)
     arguments.output.write_text(decision.to_json() + "\n", encoding="utf-8")
     print(f"Verification written to {arguments.output}")
 

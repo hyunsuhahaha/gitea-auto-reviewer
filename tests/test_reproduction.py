@@ -1,3 +1,4 @@
+import functools
 import json
 import sqlite3
 import subprocess
@@ -31,6 +32,18 @@ from gitea_auto_reviewer.review import Review, render_markdown
 
 
 SHA = "a" * 40
+
+# These tests pin the Korean output; English output is covered in test_messages.py.
+build_plan_prompt = functools.partial(build_plan_prompt, language="ko")
+finalize_review = functools.partial(finalize_review, language="ko")
+render_markdown = functools.partial(render_markdown, language="ko")
+retry_inconclusive_reproductions = functools.partial(retry_inconclusive_reproductions, language="ko")
+run_reproductions = functools.partial(run_reproductions, language="ko")
+verify_reproductions = functools.partial(verify_reproductions, language="ko")
+
+
+def _decision(raw, evidence):
+    return VerificationDecision.from_json(raw, evidence, "ko")
 
 
 def test_reproduction_runner_imports_project_from_checkout_root() -> None:
@@ -406,7 +419,7 @@ def test_confirmed_claim_without_target_reach_is_not_publishable() -> None:
     assert final.reproduced_findings == ()
     assert final.findings[0].reproduction_status == "inconclusive"
     with pytest.raises(ValueError, match="only confirmed"):
-        VerificationDecision.from_json(json.dumps({
+        _decision(json.dumps({
             "version": 1, "head_sha": SHA, "accepted_finding_indices": [0],
             "rejected_findings": [],
         }), evidence)
@@ -445,14 +458,14 @@ def test_second_pass_can_only_accept_confirmed_reproductions() -> None:
                            target_reached=True, reached_targets=("product/models.py:31",)),
         ReproductionResult(1, "refuted", "조건", "정상", "정상", "정상", True, 0.1),
     ))
-    decision = VerificationDecision.from_json(json.dumps({
+    decision = _decision(json.dumps({
         "version": 1, "head_sha": SHA, "accepted_finding_indices": [0],
         "rejected_findings": [],
     }), evidence)
     assert decision.accepted_finding_indices == (0,)
 
     with pytest.raises(ValueError, match="only confirmed"):
-        VerificationDecision.from_json(json.dumps({
+        _decision(json.dumps({
             "version": 1, "head_sha": SHA, "accepted_finding_indices": [1],
             "rejected_findings": [{"finding_index": 0, "reason": "실제 결과와 무관"}],
         }), evidence)
@@ -467,17 +480,17 @@ def test_second_pass_must_explain_every_rejected_confirmed_finding() -> None:
     ))
 
     with pytest.raises(ValueError, match="explain every rejected"):
-        VerificationDecision.from_json(json.dumps({
+        _decision(json.dumps({
             "version": 1, "head_sha": SHA,
             "accepted_finding_indices": [], "rejected_findings": [],
         }), evidence)
     with pytest.raises(ValueError, match="rejection reasons"):
-        VerificationDecision.from_json(json.dumps({
+        _decision(json.dumps({
             "version": 1, "head_sha": SHA, "accepted_finding_indices": [],
             "rejected_findings": [{"finding_index": 0, "reason": "   "}],
         }), evidence)
     with pytest.raises(ValueError, match="concrete Korean"):
-        VerificationDecision.from_json(json.dumps({
+        _decision(json.dumps({
             "version": 1, "head_sha": SHA, "accepted_finding_indices": [],
             "rejected_findings": [{
                 "finding_index": 0,
