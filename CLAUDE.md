@@ -49,6 +49,7 @@
 - `src/gitea_auto_reviewer/_capture.py`, `_django_extract.py`, `_trace_plugin.py`: copied to temp dirs and run by the project's CI interpreter; they must not import this package.
 - `tests/fixtures/shop` (base) and `tests/fixtures/shop_head` (head overlay): sample Django app; `tests/shop_fixture.py` builds the two-commit repo.
 - `.gitea/workflows/ai-review.yml`: Windows Gitea Actions reference workflow.
+- `examples/workflows/ai-review-linux.yml` and `Dockerfile`: Linux job-container workflow (Gitea and Forgejo, `github.*` context) and its image.
 - `AI_REVIEW.md`: project-specific review policy consumed from the trusted base commit.
 - `examples/ai-review.toml`: documented sample of every `.ai-review.toml` key.
 
@@ -57,4 +58,4 @@
 - Use Conventional Commit subjects (`feat:`, `fix:`, `perf:`), matching repository history.
 - Add or update focused tests for every boundary, validation, subprocess, or API behavior change.
 - Preserve ordinary-comment-only behavior: never add approval, rejection, merge, push, or branch-protection actions.
-- Keep the workflow compatible with PowerShell and the dedicated Windows runner paths unless scope explicitly changes.
+- Keep the Windows workflow compatible with PowerShell and the dedicated Windows runner paths, and keep the Linux workflow's steps identical in name and order (`tests/test_workflow.py` enforces this).

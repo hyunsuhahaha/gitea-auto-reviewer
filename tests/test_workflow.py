@@ -1,3 +1,4 @@
+import pytest
 from pathlib import Path
 
 
@@ -72,3 +73,41 @@ def test_workflow_resolves_base_config_once_for_all_steps() -> None:
     assert "AppendAllText($env:GITHUB_ENV" in metadata
     # Live-integration guards stay in the workflow even when a repository has no config yet.
     assert '--require-setting "ERP_LIVE_SEND=false"' in workflow
+
+
+WORKFLOWS = (Path(".gitea/workflows/ai-review.yml"), Path("examples/workflows/ai-review-linux.yml"))
+
+
+def _steps(path: Path) -> dict[str, str]:
+    steps = path.read_text(encoding="utf-8").split("      - name: ")[1:]
+    return {step.splitlines()[0]: step for step in steps}
+
+
+def test_linux_and_windows_workflows_run_the_same_steps_in_order() -> None:
+    windows, linux = (list(_steps(path)) for path in WORKFLOWS)
+    assert linux == windows
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=["windows", "linux"])
+def test_workflow_keeps_credential_stages_separate(path) -> None:
+    steps = _steps(path)
+    for name, step in steps.items():
+        if name == "Post or update PR comment":
+            assert "secrets.AI_REVIEW_GITEA_TOKEN" in step
+            continue
+        assert "AI_REVIEW_GITEA_TOKEN" not in step, name
+        if name in {"Generate first-pass Codex findings", "Plan rollback-only reproductions",
+                    "Verify reproduced findings with Codex",
+                    "Find Django impact paths missing from the static graph"}:
+            assert 'GITEA_TOKEN: ""' in step, name
+    gated = [name for name, step in steps.items() if "steps.metadata.outputs.skip != 'true'" in step]
+    assert gated == list(steps)[1:-1]
+    assert "--config-output" in steps["Resolve PR metadata"]
+    assert "AI_REVIEW_CONFIG_FILE=" in steps["Resolve PR metadata"]
+
+
+def test_linux_workflow_is_portable_between_gitea_and_forgejo() -> None:
+    workflow = WORKFLOWS[1].read_text(encoding="utf-8")
+    assert "gitea." not in workflow.replace("gitea-auto-reviewer", "").replace("gitea-auto-review", "")
+    assert "C:\\" not in workflow and "powershell" not in workflow
+    assert "ai-review-codex:/codex-home" in workflow
