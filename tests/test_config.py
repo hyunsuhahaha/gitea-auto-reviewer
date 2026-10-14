@@ -76,10 +76,26 @@ def test_resolved_config_round_trips_through_json() -> None:
     '[reproduction]\ntimeout = 0',
     '[reproduction.required_settings]\nNAME = 1.5',
     'not toml = = 1',
+    '[tests]\nselection = "yes"',
+    '[tests]\nshards = 0',
+    '[tests]\nshards = 17',
+    '[tests]\nfull_run_paths = "migrations/*"',
+    '[tests]\nmap = "x"',
 ])
 def test_invalid_config_is_rejected(text) -> None:
     with pytest.raises(ValueError):
         parse_config(text)
+
+
+def test_test_selection_is_opt_in_and_parsed() -> None:
+    defaults = parse_config(None)
+    config = parse_config('[tests]\nselection = true\nshards = 4\nfull_run_paths = ["*/migrations/*"]\n'
+                          'ignore_paths = ["deploy/*"]\n')
+
+    assert (defaults.test_selection, defaults.test_shards) == (False, 1)
+    assert (config.test_selection, config.test_shards) == (True, 4)
+    assert config.test_full_run_paths == ("*/migrations/*",) and config.test_ignore_paths == ("deploy/*",)
+    assert ReviewConfig.from_json(config.to_json()) == config
 
 
 def test_resolved_json_rejects_unknown_fields() -> None:

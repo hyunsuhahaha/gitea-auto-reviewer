@@ -21,6 +21,7 @@ head and comparing the database rows each run changes**. A fixed runner, not the
 | **Impact paths** | Combines the GitNexus static graph with Django signals, URLs, and model metadata, string-based ORM field references, and pytest call traces, then flags paths the static graph misses | `post_save` receivers and `filter(stock__lt=5)` are not calls, so call graphs do not see them |
 | **Base vs head differential runs** | Runs each reproduction scenario twice on base and twice on head and compares row-level DB changes, return values, and exceptions just before rollback | If an LLM guesses the "expected" value, the verdict inherits the guess. The baseline is the real behavior of the code before the PR |
 | **Rollback-only reproduction** | Every run happens inside `transaction.atomic()`, is forced to roll back, and every written table is checked again on a fresh connection | Uses a real test database without leaving data behind |
+| **Change-aware test selection** | Runs only the tests a change can reach, using a base-branch map of the functions each test really executed and a function-level AST comparison, and balances parallel shards by recorded durations | Running the whole suite for a one-line change slows every review. Changes function coverage cannot bound fall back to the full suite |
 | **Per-stage credentials** | Running PR code, the Codex review, and posting to Gitea happen in separate processes with separate credentials, and every input is bound to the head SHA | The code under review cannot reach the reviewer's tokens or policy |
 
 ## Example comment
@@ -69,8 +70,9 @@ results, and a risk level. Comments are in Korean by default; the example above 
 ```text
 PR head (pinned SHA)
  │
+ ├─ test-select pick the tests to run from the base-branch impact map and git objects (before PR code runs)
  ├─ index      index the exact head SHA with GitNexus
- ├─ evidence   Django check · migration check · pytest (+ call tracing of changed functions)
+ ├─ evidence   Django check · migration check · selected pytest in parallel shards (+ call tracing)
  ├─ impact     Django structure · ORM field references · runtime traces → compared with GitNexus
  │                                   ── PR code runs up to here, without credentials ──
  ├─ review     first Codex + GitNexus MCP pass (read-only sandbox, no Gitea token)
@@ -173,6 +175,54 @@ Hidden state is read only from comments written by the bot account itself, so no
 again and nothing is posted if a newer commit arrived during the review. The workflows also set a
 per-PR `concurrency` group that cancels superseded runs, and a 120-minute `timeout-minutes`.
 
+### Change-aware test selection and sharding (`test-select`)
+
+Opt in with `[tests].selection = true`. While it is off, the full suite runs once, as before.
+
+**1. Recording the test impact map.** On every push to the base branch,
+[`ai-review-test-map-linux.yml`](examples/workflows/ai-review-test-map-linux.yml) (Windows:
+[`.gitea/workflows/ai-review-test-map.yml`](.gitea/workflows/ai-review-test-map.yml)) runs the full
+suite once with `evidence --record-test-map`. The same pytest plugin uses `sys.setprofile` to record,
+per test, the repository functions (by qualname) it really executed, its duration, and its outcome; the
+map is saved to the Actions cache keyed by commit SHA. Because it records execution rather than a
+static import graph, signal receivers and ORM callbacks are linked to the tests that trigger them.
+
+- Session- and class-scoped fixtures and unittest `setUpClass`/`setUpTestData` run once, during the
+  first test that needs them. Code run while a fixture is set up is therefore collected per fixture and
+  attributed to every test whose fixture closure contains it.
+- Functions that run outside any test (imports, collection, `AppConfig.ready`, conftest hooks) are
+  marked separately. The plugin loads before conftest files, so it sees that phase too.
+
+**2. Selection.** A PR review restores the map read-only and, before any PR code runs, compares the map
+commit with the PR head at function granularity using git objects alone. Functions are compared as
+ASTs without line numbers or docstrings, so moved lines and comment edits are not changes.
+
+| Tests that run | Changes that fall back to the full suite |
+|---|---|
+| tests that executed a changed or removed function | module- or class-level code (constants, model fields, imports, adding or removing a method, which can change dispatch) |
+| tests missing from the map (new or renamed) | a deleted or renamed Python file |
+| every test in a changed test module | a changed function that runs outside tests (imports, collection) |
+| tests that failed when the map was recorded | non-Python files (`requirements*.txt`, templates, SQL, ...; documentation and `ignore_paths` excepted) |
+| | paths in `[tests].full_run_paths`; a missing or invalid map, or a map commit that is not an ancestor of the head |
+
+The difference is computed from the **map commit** to the head, not from the base, so an older map
+still accounts for everything merged since. The comment shows the scope under the test line, such as
+`Ran 12 of 340 tests affected by this change` or `Ran all 340 tests: module- or class-level change in
+shop/models.py`, and the job log lists changed functions that no existing test executes.
+
+**3. Sharding.** With `[tests].shards = N`, the selected tests are split across N parallel pytest
+processes using longest-processing-time-first packing of recorded durations; tests without a recorded
+duration are estimated at the median. Tests of one class (or else one module) stay on one shard so
+`setUpClass` and module fixtures are not repeated. Every shard computes the same deterministic
+placement from the same collection, so each test runs exactly once without coordination. Each shard
+gets `AI_REVIEW_SHARD_INDEX` and `AI_REVIEW_SHARD_COUNT`; with a shared database such as PostgreSQL,
+add them to the test database name in your CI settings so shards do not collide.
+
+```python
+# config/settings/ci.py
+DATABASES["default"]["TEST"] = {"NAME": f"test_app_{os.environ.get('AI_REVIEW_SHARD_INDEX', '0')}"}
+```
+
 ### Skipped reviews
 
 Automatic runs skip the following PRs through `metadata --allow-skip`, and every later step is
@@ -205,6 +255,9 @@ v0.3 supports only:
   security boundary.
 - The pytest call-trace plugin runs in the same process as PR code, so its output is trusted exactly
   as much as the pytest result.
+- Only the base-branch push workflow records the test impact map and writes the cache. PR reviews read
+  it with `actions/cache/restore`, and test selection finishes before any PR code runs. A map file
+  committed by the PR at the map path is ignored and the full suite runs.
 - This is process separation, not VM isolation. Do not use it on untrusted public repositories. The
   `read-only` sandbox blocks repository writes but not OS-level process execution.
 - In the Docker job container, PR code and the Codex login volume run as the same container user. The
@@ -248,6 +301,10 @@ Codex access, and a Django test database for reproductions.
 5. CI dependencies are installed from the repository's `requirements-ci.txt`. Set the Actions
    variables `AI_REVIEW_REQUIREMENTS` and `AI_REVIEW_PYTHON_VERSION` to change the file or Python
    version, and `AI_REVIEW_IMAGE` to change the image name.
+6. (Optional) To run only the tests a change affects, add
+   [`examples/workflows/ai-review-test-map-linux.yml`](examples/workflows/ai-review-test-map-linux.yml)
+   as `.gitea/workflows/ai-review-test-map.yml` and set `[tests] selection = true` in `.ai-review.toml`.
+   The full suite runs until the first map is recorded.
 
 Open a PR and the review comment appears. To review an existing or merged PR, run the workflow from
 the Actions page (`workflow_dispatch`) with just the PR number.
@@ -303,6 +360,12 @@ timeout = 180
 
 [reproduction.required_settings]         # settings that must have these values before reproducing
 PAYMENT_LIVE_MODE = false
+
+[tests]
+selection = true                         # run only the tests a change affects (default false)
+shards = 4                               # parallel pytest shards, 1-16 (default 1)
+full_run_paths = ["*/sql/*"]             # paths that always trigger the full suite
+ignore_paths = ["deploy/*"]              # non-Python files that cannot affect tests
 ```
 
 Without the file, defaults apply (Korean comments, default skip rules, no extra environment
@@ -320,7 +383,8 @@ the settings from the config file.
 | `metadata` | resolve PR number, title, and base/head SHAs from Gitea; decide whether to skip | `--pr`, `--output-file`, `--allow-skip`, `--config-output` |
 | `config` | resolve the base commit's `.ai-review.toml` to JSON | `--base-sha`, `--output` |
 | `index` | index the head SHA with GitNexus | `--head-sha` |
-| `evidence` | Django check, migration check, pytest | `--only`, `--trace-output` |
+| `test-select` | choose the tests to run from the test impact map and git objects | `--test-map`, `--output` |
+| `evidence` | Django check, migration check, pytest | `--only`, `--trace-output`, `--selection-file`, `--shards`, `--record-test-map` |
 | `evidence-merge` | combine per-check evidence | `--input` (repeatable) |
 | `impact` | compute impact paths and compare with GitNexus | `--runtime-trace`, `--skip-gitnexus` |
 | `review` | first Codex pass | `--evidence-file`, `--impact-file` |
@@ -361,7 +425,10 @@ python -m pytest
 - ORM field references are resolved only for chains starting with `Model.objects…`. Related managers
   (`product.orders.filter(…)`) and instance attribute assignment are not recognized yet.
 - DRF serializer `source=` and Celery task paths are not collected yet.
-- Runtime tracing records only the main thread.
+- Call-chain tracing records only the main thread. The test impact map also records other threads,
+  but not code run in subprocesses a test starts.
+- Test selection assumes deterministic tests. A test that takes different paths between runs is
+  linked only to the functions it executed when the map was recorded.
 - PRs that change migrations or dependencies are judged in assert mode instead of differential mode.
 - Differential runs compare tables with more than 5,000 rows partially; only newly created rows are
   compared then.

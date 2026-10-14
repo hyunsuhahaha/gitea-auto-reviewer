@@ -21,6 +21,7 @@ Django 런타임 구조와 실제 테스트 실행 경로를 더해 찾고, 데�
 | **영향 경로 분석** | GitNexus 정적 그래프에 Django signal·URL·모델 메타데이터, 문자열 ORM 필드 참조, pytest 호출 추적을 합쳐 변경 함수의 영향 경로를 계산하고, 정적 그래프에 없는 경로를 표시 | `post_save` receiver, `filter(stock__lt=5)` 같은 경로는 호출 관계가 아니라서 호출 그래프에 나타나지 않음 |
 | **base·head 차분 실행** | 같은 재현 시나리오를 base와 head에서 각 2회 실행하고, 롤백 직전의 행 단위 DB 변경·반환값·예외를 비교 | LLM이 "기대값"을 추측하면 판정도 함께 틀림. 기준을 "PR 이전 코드의 실제 동작"으로 고정 |
 | **롤백 전용 재현** | 모든 실행을 `transaction.atomic()` 안에서 강제 롤백하고, 새 연결로 쓰기가 일어난 모든 테이블이 원상태인지 검사 | 실제 테스트 DB를 쓰면서도 데이터를 남기지 않음 |
+| **변경 영향 테스트 선택** | base 브랜치에서 기록한 "테스트별 실제 실행 함수" 맵과 함수 단위 AST 비교로 변경이 닿는 테스트만 실행하고, 기록된 실행 시간으로 병렬 샤드를 균형 있게 나눔 | 한 줄 변경에도 전체 스위트를 돌리면 리뷰가 늦어짐. 함수 커버리지로 경계를 확정할 수 없는 변경은 전체 실행으로 되돌림 |
 | **단계별 자격 증명 분리** | PR 코드 실행, Codex 리뷰, Gitea 댓글 작성을 서로 다른 프로세스와 자격 증명으로 분리하고 모든 입력을 head SHA에 고정 | 리뷰 대상 코드가 리뷰어의 토큰이나 정책을 건드리지 못하게 함 |
 
 ## 리뷰 댓글 예시
@@ -67,8 +68,9 @@ GitNexus는 `order_view → place_order` 호출은 찾았지만, 재고를 읽�
 ```text
 PR head (SHA 고정)
  │
+ ├─ test-select base 브랜치 테스트 영향 맵 + git 객체만으로 실행할 테스트 결정 (PR 코드 실행 전)
  ├─ index      GitNexus로 정확한 head SHA 인덱싱
- ├─ evidence   Django check · migration check · pytest (+ 변경 함수 호출 추적)
+ ├─ evidence   Django check · migration check · 선택된 pytest를 샤드로 병렬 실행 (+ 변경 함수 호출 추적)
  ├─ impact     Django 구조 · ORM 필드 참조 · 실행 추적 → GitNexus와 비교
  │                                   ── 여기까지 PR 코드 실행, 자격 증명 없음 ──
  ├─ review     Codex + GitNexus MCP 1차 분석 (읽기 전용 샌드박스, Gitea 토큰 없음)
@@ -173,6 +175,57 @@ Codex는 재현 시나리오(`def reproduce():` 하나만 있는 스크립트)�
 리뷰 도중 새 커밋이 push됐으면 게시하지 않습니다. 워크플로는 같은 PR의 이전 실행을
 취소하는 `concurrency` 그룹과 120분 `timeout-minutes`도 설정합니다.
 
+### 변경 영향 테스트 선택과 샤딩 (`test-select`)
+
+`[tests].selection = true`로 켜는 선택 기능입니다. 꺼져 있으면 지금처럼 전체 스위트를
+한 번 실행합니다.
+
+**1. 테스트 영향 맵 기록.** base 브랜치에 push될 때마다
+[`ai-review-test-map-linux.yml`](examples/workflows/ai-review-test-map-linux.yml)(Windows는
+[`.gitea/workflows/ai-review-test-map.yml`](.gitea/workflows/ai-review-test-map.yml))이 전체
+스위트를 `evidence --record-test-map`으로 한 번 실행합니다. 같은 pytest 플러그인이
+`sys.setprofile`로 테스트마다 실제로 실행된 저장소 함수(qualname), 실행 시간, 결과를
+기록하고, 맵은 커밋 SHA 키로 Actions 캐시에 저장됩니다. 정적 import 그래프가 아니라
+실제 실행을 기록하기 때문에 signal receiver, ORM 콜백처럼 호출 그래프에 없는 경로도
+테스트와 연결됩니다.
+
+- session·class 범위 fixture와 unittest `setUpClass`/`setUpTestData`는 첫 테스트에서 한 번만
+  실행됩니다. 그래서 fixture 설정 중에 실행된 코드를 fixture별로 모으고, 그 fixture를
+  의존 관계(fixture closure)에 가진 모든 테스트에 귀속합니다.
+- 임포트·수집 단계처럼 테스트 밖에서 실행된 함수(`AppConfig.ready`, conftest 훅 등)는
+  따로 표시합니다. 플러그인은 conftest보다 먼저 로드되어 이 구간도 관찰합니다.
+
+**2. 선택.** PR 리뷰는 맵을 읽기 전용으로 복원하고, PR 코드를 실행하기 전에 git 객체만으로
+맵 커밋과 PR head를 함수 단위로 비교합니다. 줄 번호와 docstring을 뺀 AST를 qualname별로
+비교하므로 줄 이동이나 주석만 바뀐 함수는 변경으로 보지 않습니다.
+
+| 실행하는 테스트 | 전체 실행으로 되돌리는 변경 |
+|---|---|
+| 바뀌거나 삭제된 함수를 실제로 실행한 테스트 | 모듈·클래스 본문 변경 (상수, 모델 필드, import, 메서드 추가·삭제처럼 dispatch를 바꿀 수 있는 변경) |
+| 맵에 없는 테스트 (새로 추가되거나 이름이 바뀐 테스트) | Python 파일 삭제·이름 변경 |
+| 내용이 바뀐 테스트 모듈의 모든 테스트 | 테스트 밖(임포트·수집 단계)에서 실행되는 함수의 변경 |
+| 맵 기록 당시 실패한 테스트 | Python이 아닌 파일 변경 (`requirements*.txt`, 템플릿, SQL 등. 문서와 `ignore_paths`는 제외) |
+| | `[tests].full_run_paths`에 해당하는 파일, 맵이 없거나 검증에 실패하거나 맵 커밋이 head의 조상이 아님 |
+
+차이는 base가 아니라 **맵 커밋에서 head까지** 계산하므로, 맵이 오래돼도 그 사이 base
+브랜치의 변경까지 포함해 판단합니다. 결과는 댓글의 테스트 줄 아래에
+`변경 영향 테스트 12/340개만 실행` 또는 `전체 340개 실행: shop/models.py의 모듈·클래스 수준 변경`처럼
+표시되고, 기존 테스트가 한 번도 실행하지 않은 변경 함수는 작업 로그에 남습니다.
+
+**3. 샤딩.** `[tests].shards = N`이면 선택된 테스트를 N개의 pytest 프로세스로 나눠 병렬
+실행합니다. 맵에 기록된 실행 시간으로 LPT(longest-processing-time-first) 방식으로 배치하고,
+기록이 없는 테스트는 중앙값으로 추정합니다. 같은 클래스(없으면 같은 모듈)의 테스트는 같은
+샤드에 두어 `setUpClass`나 module fixture가 중복 실행되지 않게 합니다. 모든 샤드가 같은
+수집 결과에서 같은 결정적 배치를 계산하므로 별도 조정 없이 테스트가 정확히 한 번씩
+실행됩니다. 각 샤드에는 `AI_REVIEW_SHARD_INDEX`와 `AI_REVIEW_SHARD_COUNT`가 전달되니,
+PostgreSQL 같은 공유 DB를 쓰면 CI 설정에서 테스트 DB 이름에 붙여 샤드끼리 충돌하지 않게
+하세요.
+
+```python
+# config/settings/ci.py
+DATABASES["default"]["TEST"] = {"NAME": f"test_app_{os.environ.get('AI_REVIEW_SHARD_INDEX', '0')}"}
+```
+
 ### 자동 리뷰 생략
 
 자동 실행은 `metadata --allow-skip`으로 다음 PR을 건너뛰며, 이후 단계는 모두 생략됩니다.
@@ -203,6 +256,9 @@ v0.3은 다음 환경만 지원합니다.
 - 차분 실행의 base 쪽은 이미 병합된 신뢰된 커밋이라 보안 경계를 넓히지 않습니다.
 - pytest 호출 추적 플러그인은 PR 코드와 같은 프로세스에서 돌기 때문에, 그 결과는
   pytest 결과와 같은 신뢰 수준으로 취급합니다.
+- 테스트 영향 맵은 base 브랜치 push 워크플로만 기록하고 캐시에 저장합니다. PR 리뷰는
+  `actions/cache/restore`로 읽기만 하고, 테스트 선택은 PR 코드가 실행되기 전에 끝납니다.
+  PR이 맵 경로에 파일을 커밋해 두면 그 맵은 무시하고 전체 실행합니다.
 - 이것은 프로세스 분리이지 VM 격리가 아닙니다. 신뢰할 수 없는 공개 저장소에는 쓰지
   마세요. `read-only` 샌드박스는 저장소 쓰기를 막지만 OS 수준의 프로세스 실행까지 막지는
   않습니다.
@@ -246,6 +302,10 @@ v0.3은 다음 환경만 지원합니다.
 5. CI 의존성은 저장소의 `requirements-ci.txt`에서 설치합니다. 다른 파일이나 Python 버전을
    쓰려면 Actions 변수 `AI_REVIEW_REQUIREMENTS`, `AI_REVIEW_PYTHON_VERSION`을 설정합니다.
    이미지 이름은 `AI_REVIEW_IMAGE`로 바꿀 수 있습니다.
+6. (선택) 변경 영향 테스트만 실행하려면
+   [`examples/workflows/ai-review-test-map-linux.yml`](examples/workflows/ai-review-test-map-linux.yml)을
+   `.gitea/workflows/ai-review-test-map.yml`로 추가하고 `.ai-review.toml`에
+   `[tests] selection = true`를 넣습니다. 첫 맵이 기록되기 전까지는 전체 실행합니다.
 
 PR을 열면 리뷰 댓글이 달립니다. 기존 PR이나 병합된 PR은 Actions 화면의
 `workflow_dispatch`에 PR 번호만 넣어 다시 리뷰할 수 있습니다.
@@ -301,6 +361,12 @@ timeout = 180
 
 [reproduction.required_settings]         # 재현 전에 반드시 이 값이어야 하는 설정
 PAYMENT_LIVE_MODE = false
+
+[tests]
+selection = true                         # 변경 영향 테스트만 실행 (기본 false)
+shards = 4                               # 병렬 pytest 샤드 수 1~16 (기본 1)
+full_run_paths = ["*/sql/*"]             # 바뀌면 항상 전체 실행할 경로
+ignore_paths = ["deploy/*"]              # 테스트에 영향이 없는 Python 외 파일
 ```
 
 파일이 없으면 기본값(한국어 댓글, 생략 규칙 기본값, 추가 환경 변수 없음)을 씁니다.
@@ -318,7 +384,8 @@ CLI 옵션, Actions 변수(`AI_REVIEW_FIRST_PASS_EFFORT`, `AI_REVIEW_PLAN_EFFORT
 | `metadata` | Gitea에서 PR 번호·제목·base/head SHA 조회, 생략 여부 판단 | `--pr`, `--output-file`, `--allow-skip`, `--config-output` |
 | `config` | base 커밋의 `.ai-review.toml`을 JSON으로 해석 | `--base-sha`, `--output` |
 | `index` | head SHA를 GitNexus로 인덱싱 | `--head-sha` |
-| `evidence` | Django check, migration check, pytest 실행 | `--only`, `--trace-output` |
+| `test-select` | 테스트 영향 맵과 git 객체로 실행할 테스트 결정 | `--test-map`, `--output` |
+| `evidence` | Django check, migration check, pytest 실행 | `--only`, `--trace-output`, `--selection-file`, `--shards`, `--record-test-map` |
 | `evidence-merge` | 단계별 증거를 하나로 합침 | `--input` (반복) |
 | `impact` | 영향 경로 계산과 GitNexus 비교 | `--runtime-trace`, `--skip-gitnexus` |
 | `review` | Codex 1차 리뷰 | `--evidence-file`, `--impact-file` |
@@ -359,7 +426,10 @@ python -m pytest
 - ORM 필드 참조는 `Model.objects…`로 시작하는 체인만 해석합니다. 관계 매니저
   (`product.orders.filter(…)`)나 인스턴스 속성 대입은 아직 인식하지 않습니다.
 - DRF serializer의 `source=`와 Celery task 경로는 아직 수집하지 않습니다.
-- 실행 추적은 메인 스레드만 기록합니다.
+- 호출 체인 추적은 메인 스레드만 기록합니다. 테스트 영향 맵은 다른 스레드의 실행도
+  기록하지만, 테스트가 띄운 하위 프로세스 안의 실행은 보지 못합니다.
+- 테스트 선택은 테스트가 결정적이라고 가정합니다. 실행할 때마다 다른 경로를 타는
+  테스트는 맵 기록 때 실행한 함수로만 연결됩니다.
 - 마이그레이션이나 의존성이 바뀐 PR은 차분 실행 대신 단정 모드로 판정합니다.
 - 차분 실행은 행이 5,000건을 넘는 테이블을 부분 비교합니다. 이때는 새로 생성된 행만
   비교합니다.

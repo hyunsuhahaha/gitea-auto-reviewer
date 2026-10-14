@@ -82,6 +82,28 @@ jobs:
           BASE_SHA: ${{ steps.metadata.outputs.base_sha }}
         run: git fetch --no-tags origin $env:BASE_SHA
 
+      # The map is written only by ai-review-test-map.yml on the base branch; this job
+      # restores it read-only. Without one, or with [tests].selection off, every test runs.
+      - name: Restore test impact map
+        if: steps.metadata.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: .ai-review-test-map
+          key: ai-review-test-map-${{ steps.metadata.outputs.base_sha }}
+          restore-keys: ai-review-test-map-
+
+      # Decides from git objects and the base-branch map alone, before any PR code runs.
+      - name: Select tests affected by the change
+        if: steps.metadata.outputs.skip != 'true'
+        env:
+          HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
+          SELECTION_FILE: ${{ runner.temp }}\gitea-auto-review-test-selection.json
+        run: |
+          & $env:REVIEWER_EXE test-select `
+            --head-sha "$env:HEAD_SHA" `
+            --test-map ".ai-review-test-map\test-map.json" `
+            --output "$env:SELECTION_FILE"
+
       - name: Index exact PR head with GitNexus
         if: steps.metadata.outputs.skip != 'true'
         env:
@@ -125,7 +147,8 @@ jobs:
             --output "$env:CHECK_FILE"
 
       # The trace plugin records real call chains into and out of changed
-      # functions while the existing test suite runs.
+      # functions while the selected tests run, split into [tests].shards
+      # duration-balanced parallel shards.
       - name: Run pytest with call tracing
         if: steps.metadata.outputs.skip != 'true'
         env:
@@ -133,12 +156,14 @@ jobs:
           HEAD_SHA: ${{ steps.metadata.outputs.head_sha }}
           CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-pytest.json
           TRACE_FILE: ${{ runner.temp }}\gitea-auto-review-trace.json
+          SELECTION_FILE: ${{ runner.temp }}\gitea-auto-review-test-selection.json
         run: |
           & $env:REVIEWER_EXE evidence `
             --head-sha "$env:HEAD_SHA" `
             --base-sha "$env:BASE_SHA" `
             --python "$env:CI_PYTHON" `
             --only "pytest" `
+            --selection-file "$env:SELECTION_FILE" `
             --trace-output "$env:TRACE_FILE" `
             --output "$env:CHECK_FILE"
 

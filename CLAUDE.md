@@ -45,10 +45,11 @@
 - `src/gitea_auto_reviewer/gitnexus.py`: GitNexus indexing, Codex MCP config, and a direct STDIO MCP `impact` client.
 - `src/gitea_auto_reviewer/reproduction.py`: reproduction plan/evidence schemas, runner source, assert and differential verdicts.
 - `src/gitea_auto_reviewer/differential.py`: base merge-base worktree, differential availability, and base/head DB-change comparison.
+- `src/gitea_auto_reviewer/selection.py`: test impact map, function-level change analysis, and change-aware test selection.
 - `src/gitea_auto_reviewer/impact.py`: changed-function detection, ORM field references, and Django/runtime impact paths vs GitNexus.
-- `src/gitea_auto_reviewer/_capture.py`, `_django_extract.py`, `_trace_plugin.py`: copied to temp dirs and run by the project's CI interpreter; they must not import this package.
+- `src/gitea_auto_reviewer/_capture.py`, `_django_extract.py`, `_trace_plugin.py`: copied to temp dirs and run by the project's CI interpreter; they must not import this package. `_trace_plugin.py` also records the test impact map and applies test selection and duration-balanced sharding.
 - `tests/fixtures/shop` (base) and `tests/fixtures/shop_head` (head overlay): sample Django app; `tests/shop_fixture.py` builds the two-commit repo.
-- `.gitea/workflows/ai-review.yml`: Windows Gitea Actions reference workflow.
+- `.gitea/workflows/ai-review.yml`: Windows Gitea Actions reference workflow; `ai-review-test-map.yml` records the test impact map on base-branch pushes (Linux twin: `examples/workflows/ai-review-test-map-linux.yml`).
 - `examples/workflows/ai-review-linux.yml` and `Dockerfile`: Linux job-container workflow (Gitea and Forgejo, `github.*` context) and its image.
 - `AI_REVIEW.md`: project-specific review policy consumed from the trusted base commit.
 - `examples/ai-review.toml`: documented sample of every `.ai-review.toml` key.
