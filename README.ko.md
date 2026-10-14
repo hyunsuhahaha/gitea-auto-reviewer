@@ -14,6 +14,10 @@ Django 런타임 구조와 실제 테스트 실행 경로를 더해 찾고, 데�
 시나리오를 **base 코드와 PR head 코드에서 각각 실행해 DB 행 변경을 비교**하는 방식으로
 확인합니다. 판정은 LLM이 아니라 고정된 실행기가 내립니다.
 
+테스트도 매번 전부 돌리지 않습니다. base 브랜치에서 기록한 "테스트별 실제 실행 함수" 맵으로
+변경이 닿는 테스트만 골라, 기록된 실행 시간 기준으로 나눈 병렬 샤드에서 실행합니다.
+함수 단위로 영향 범위를 확정할 수 없는 변경은 전체 실행으로 되돌립니다.
+
 ## 핵심 기능
 
 | | 무엇을 하는가 | 왜 필요한가 |
@@ -84,7 +88,9 @@ PR head (SHA 고정)
 모든 단계는 하나의 Actions 작업 안에서 순차 실행됩니다. Linux(Docker 작업 컨테이너)용
 [`examples/workflows/ai-review-linux.yml`](examples/workflows/ai-review-linux.yml)과 Windows
 러너용 [`.gitea/workflows/ai-review.yml`](.gitea/workflows/ai-review.yml)은 같은 단계를 같은
-순서로 실행합니다.
+순서로 실행합니다. 테스트 영향 맵은 base 브랜치 push 때 별도 워크플로
+([`ai-review-test-map-linux.yml`](examples/workflows/ai-review-test-map-linux.yml),
+[`.gitea/workflows/ai-review-test-map.yml`](.gitea/workflows/ai-review-test-map.yml))가 기록합니다.
 
 ### 1. 영향 경로 분석 (`impact`)
 

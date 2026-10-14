@@ -14,6 +14,10 @@ call graph with Django's runtime structure and the call paths that the test suit
 Data-integrity problems are confirmed by **running the same scenario on the base code and on the PR
 head and comparing the database rows each run changes**. A fixed runner, not the LLM, makes the call.
 
+Nor does it run every test every time. A base-branch map of the functions each test really executes
+selects only the tests a change can reach, and those run in parallel shards balanced by recorded
+durations. Changes that function coverage cannot bound fall back to the full suite.
+
 ## Features
 
 | | What it does | Why |
@@ -86,7 +90,9 @@ PR head (pinned SHA)
 Every stage runs in order inside one Actions job. The Linux workflow
 ([`examples/workflows/ai-review-linux.yml`](examples/workflows/ai-review-linux.yml), Docker job
 container) and the Windows workflow ([`.gitea/workflows/ai-review.yml`](.gitea/workflows/ai-review.yml))
-run the same steps in the same order.
+run the same steps in the same order. A separate workflow records the test impact map on base-branch
+pushes ([`ai-review-test-map-linux.yml`](examples/workflows/ai-review-test-map-linux.yml),
+[`.gitea/workflows/ai-review-test-map.yml`](.gitea/workflows/ai-review-test-map.yml)).
 
 ### 1. Impact paths (`impact`)
 
