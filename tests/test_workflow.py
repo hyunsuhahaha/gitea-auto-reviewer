@@ -111,3 +111,39 @@ def test_linux_workflow_is_portable_between_gitea_and_forgejo() -> None:
     assert "gitea." not in workflow.replace("gitea-auto-reviewer", "").replace("gitea-auto-review", "")
     assert "C:\\" not in workflow and "powershell" not in workflow
     assert "ai-review-codex:/codex-home" in workflow
+
+
+@pytest.mark.parametrize("path", WORKFLOWS, ids=["windows", "linux"])
+def test_review_workflow_selects_tests_before_any_pr_code_runs(path) -> None:
+    steps = _steps(path)
+    names = list(steps)
+    assert (names.index("Fetch base commit as data") < names.index("Restore test impact map")
+            < names.index("Select tests affected by the change") < names.index("Create isolated CI environment"))
+    assert "actions/cache/restore@v4" in steps["Restore test impact map"]
+    # Review runs execute PR code, so they may read the map but never write the cache.
+    workflow = path.read_text(encoding="utf-8")
+    assert "actions/cache/save" not in workflow and "actions/cache@" not in workflow
+    assert "test-select" in steps["Select tests affected by the change"]
+    assert "--selection-file" in steps["Run pytest with call tracing"]
+
+
+MAP_WORKFLOWS = (Path(".gitea/workflows/ai-review-test-map.yml"),
+                 Path("examples/workflows/ai-review-test-map-linux.yml"))
+
+
+def test_linux_and_windows_map_workflows_run_the_same_steps_in_order() -> None:
+    windows, linux = (list(_steps(path)) for path in MAP_WORKFLOWS)
+    assert linux == windows
+
+
+@pytest.mark.parametrize("path", MAP_WORKFLOWS, ids=["windows", "linux"])
+def test_map_workflow_records_only_base_branch_pushes_into_the_restored_cache(path) -> None:
+    workflow = path.read_text(encoding="utf-8")
+    steps = _steps(path)
+    assert "pull_request" not in workflow and "secrets." not in workflow
+    assert "--record-test-map" in steps["Record test impact map"]
+    save = steps["Save test impact map"]
+    assert "actions/cache/save@v4" in save
+    review = _steps(WORKFLOWS[MAP_WORKFLOWS.index(path)])["Restore test impact map"]
+    for line in ("path: .ai-review-test-map", "key: ai-review-test-map-"):
+        assert line in save and line in review

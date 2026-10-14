@@ -184,6 +184,37 @@ def test_not_run_is_explicit() -> None:
     assert "테스트" in rendered and "NOT RUN" in rendered
 
 
+def test_test_scope_is_rendered_only_when_selection_ran() -> None:
+    payload = impact_payload()
+    payload["tests"] = {"status": "pass", "passed": 12, "total": 12}
+    plain = Review.from_json(json.dumps(payload))
+    payload["tests"]["scope"] = {"mode": "impact", "selected": 12, "collected": 340, "reason": None, "detail": None}
+    selected = Review.from_json(json.dumps(payload))
+    payload["tests"]["scope"] = {"mode": "full", "selected": 12, "collected": 12, "reason": "module_level",
+                                 "detail": "shop/models.py"}
+    full = Review.from_json(json.dumps(payload))
+
+    assert "tests" in json.loads(plain.to_json()) and "scope" not in json.loads(plain.to_json())["tests"]
+    assert Review.from_json(selected.to_json()) == selected
+    assert "변경 영향 테스트 12/340개만 실행" in render_markdown(selected, 1, "a" * 40, "변경")
+    assert "전체 12개 실행: shop/models.py의 모듈·클래스 수준 변경" in render_markdown(full, 1, "a" * 40, "변경")
+    assert "변경 영향" not in render_markdown(plain, 1, "a" * 40, "변경")
+
+
+@pytest.mark.parametrize("scope", [
+    {"mode": "impact", "selected": 3, "collected": 2, "reason": None, "detail": None},
+    {"mode": "impact", "selected": 1, "collected": 2, "reason": "no_map", "detail": None},
+    {"mode": "full", "selected": 2, "collected": 2, "reason": "because", "detail": None},
+    {"mode": "full", "selected": 2, "collected": 2, "reason": "no_map", "detail": "a\nb"},
+    {"mode": "partial", "selected": 1, "collected": 2, "reason": None, "detail": None},
+])
+def test_invalid_test_scope_is_rejected(scope) -> None:
+    payload = impact_payload()
+    payload["tests"] = {"status": "pass", "passed": 1, "total": 1, "scope": scope}
+    with pytest.raises(ValueError):
+        Review.from_json(json.dumps(payload))
+
+
 def test_empty_findings_are_silent() -> None:
     payload = impact_payload()
     payload.update(risk="low", risk_confidence="high", risk_evidence=[])

@@ -15,6 +15,7 @@ CONFIG_PATH = ".ai-review.toml"
 LANGUAGES = ("en", "ko")
 EFFORTS = ("low", "medium", "high")
 DEFAULT_DOCUMENTATION_PATHS = ("*.md", "*.rst", "docs/*", "LICENSE")
+MAX_TEST_SHARDS = 16
 
 _ENVIRONMENT_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
 _SETTING_NAME = re.compile(r"[A-Z_][A-Z0-9_]{0,63}")
@@ -38,10 +39,15 @@ class ReviewConfig:
     pass_env: tuple[str, ...] = ()
     required_settings: tuple[str, ...] = ()
     reproduction_timeout: int = 180
+    test_selection: bool = False
+    test_shards: int = 1
+    test_full_run_paths: tuple[str, ...] = ()
+    test_ignore_paths: tuple[str, ...] = ()
 
     def to_json(self) -> str:
         value = asdict(self)
-        for name in ("documentation_paths", "pass_env", "required_settings"):
+        for name in ("documentation_paths", "pass_env", "required_settings", "test_full_run_paths",
+                     "test_ignore_paths"):
             value[name] = list(value[name])
         return json.dumps(value, ensure_ascii=False, indent=2)
 
@@ -66,6 +72,10 @@ class ReviewConfig:
             pass_env=value["pass_env"],
             required_settings=value["required_settings"],
             reproduction_timeout=value["reproduction_timeout"],
+            test_selection=value["test_selection"],
+            test_shards=value["test_shards"],
+            test_full_run_paths=value["test_full_run_paths"],
+            test_ignore_paths=value["test_ignore_paths"],
         )
 
 
@@ -77,12 +87,13 @@ def parse_config(text: str | None) -> ReviewConfig:
         document = tomllib.loads(text)
     except tomllib.TOMLDecodeError as exc:
         raise ValueError(f"{CONFIG_PATH} is not valid TOML: {exc}") from exc
-    _keys(document, {"language", "reasoning", "skip", "django", "evidence", "reproduction"}, CONFIG_PATH)
+    _keys(document, {"language", "reasoning", "skip", "django", "evidence", "reproduction", "tests"}, CONFIG_PATH)
     reasoning = _table(document, "reasoning", {"first_pass", "plan", "verify", "repair"})
     skip = _table(document, "skip", {"label", "drafts", "documentation_paths"})
     django = _table(document, "django", {"settings_module"})
     evidence = _table(document, "evidence", {"pass_env"})
     reproduction = _table(document, "reproduction", {"timeout", "required_settings"})
+    tests = _table(document, "tests", {"selection", "shards", "full_run_paths", "ignore_paths"})
     settings = reproduction.get("required_settings", {})
     if not isinstance(settings, dict):
         raise ValueError("reproduction.required_settings must be a table")
@@ -100,6 +111,10 @@ def parse_config(text: str | None) -> ReviewConfig:
         pass_env=evidence.get("pass_env", []),
         required_settings=[f"{name}={_setting_value(name, value)}" for name, value in settings.items()],
         reproduction_timeout=reproduction.get("timeout", defaults.reproduction_timeout),
+        test_selection=tests.get("selection", defaults.test_selection),
+        test_shards=tests.get("shards", defaults.test_shards),
+        test_full_run_paths=tests.get("full_run_paths", []),
+        test_ignore_paths=tests.get("ignore_paths", []),
     )
 
 
@@ -147,9 +162,17 @@ def _validated(**value: object) -> ReviewConfig:
     timeout = value["reproduction_timeout"]
     if type(timeout) is not int or not 1 <= timeout <= 3600:
         raise ValueError("reproduction.timeout must be an integer between 1 and 3600")
+    if not isinstance(value["test_selection"], bool):
+        raise ValueError("tests.selection must be true or false")
+    shards = value["test_shards"]
+    if type(shards) is not int or not 1 <= shards <= MAX_TEST_SHARDS:
+        raise ValueError(f"tests.shards must be an integer between 1 and {MAX_TEST_SHARDS}")
+    full_run = _strings(value["test_full_run_paths"], "tests.full_run_paths", 50, 200)
+    ignore = _strings(value["test_ignore_paths"], "tests.ignore_paths", 50, 200)
     return ReviewConfig(language, value["first_pass_effort"], value["plan_effort"],  # type: ignore[arg-type]
                         value["verify_effort"], value["repair_effort"], label, value["skip_drafts"],
-                        documentation, module, pass_env, required, timeout)
+                        documentation, module, pass_env, required, timeout, value["test_selection"],
+                        shards, full_run, ignore)
 
 
 def _keys(value: dict, allowed: set[str], name: str) -> None:

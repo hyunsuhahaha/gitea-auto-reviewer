@@ -1,0 +1,70 @@
+# Records the test impact map that PR reviews use to run only the tests a change
+# can affect ([tests].selection = true in .ai-review.toml). It runs only for
+# pushes to the base branch, so the map always describes merged code; PR reviews
+# restore it read-only and never write the cache.
+name: AI review test impact map
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: powershell
+
+# Only the newest base-branch commit's map is worth finishing.
+concurrency:
+  group: ai-review-test-map
+  cancel-in-progress: true
+
+jobs:
+  record:
+    runs-on: ai-review-windows
+    timeout-minutes: 60
+    env:
+      REVIEWER_EXE: C:\gitea\ai-review\.venv\Scripts\gitea-auto-reviewer.exe
+      UV_EXE: C:\gitea\ai-review\.venv\Scripts\uv.exe
+      CI_PYTHON: .\.venv-ci\Scripts\python.exe
+    steps:
+      - name: Check out base branch commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve review settings
+        env:
+          CONFIG_FILE: ${{ runner.temp }}\gitea-auto-review-config.json
+        run: |
+          & $env:REVIEWER_EXE config `
+            --base-sha "$env:GITHUB_SHA" `
+            --output "$env:CONFIG_FILE"
+          [System.IO.File]::AppendAllText($env:GITHUB_ENV, "AI_REVIEW_CONFIG_FILE=$env:CONFIG_FILE`n")
+
+      - name: Create isolated CI environment
+        run: |
+          & $env:UV_EXE venv --clear ".venv-ci" --python "C:\Python311\python.exe"
+          & $env:UV_EXE pip install --python $env:CI_PYTHON -r "requirements-ci.txt"
+
+      # Runs the full suite once with the recording plugin: which repository
+      # functions each test executed (fixtures and setUpClass included), its
+      # duration for shard balancing, and its outcome.
+      - name: Record test impact map
+        env:
+          CHECK_FILE: ${{ runner.temp }}\gitea-auto-review-pytest.json
+        run: |
+          & $env:REVIEWER_EXE evidence `
+            --head-sha "$env:GITHUB_SHA" `
+            --python "$env:CI_PYTHON" `
+            --only "pytest" `
+            --record-test-map ".ai-review-test-map\test-map.json" `
+            --output "$env:CHECK_FILE"
+
+      - name: Save test impact map
+        uses: actions/cache/save@v4
+        with:
+          path: .ai-review-test-map
+          key: ai-review-test-map-${{ gitea.sha }}

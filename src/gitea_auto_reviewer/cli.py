@@ -7,6 +7,7 @@ import contextlib
 import fnmatch
 import json
 import os
+import subprocess
 import sys
 from dataclasses import asdict
 from pathlib import Path
@@ -25,6 +26,7 @@ from .review import (Review, TestResult, parse_previous_review, preserve_reprodu
 from .reproduction import (ReproductionEvidence, ReproductionPlan, VerificationDecision,
                            finalize_review, plan_reproductions, run_reproductions,
                            retry_inconclusive_reproductions, verify_reproductions)
+from .selection import Selection, TestMap, full_selection, select_tests
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -64,7 +66,21 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--only", choices=["django_check", "migration_check", "pytest"])
     evidence.add_argument("--trace-output", type=Path,
                           help="record pytest call chains through changed functions (requires --base-sha)")
+    evidence.add_argument("--selection-file", type=Path,
+                          help="run only the tests in a `test-select` result, when the file exists")
+    evidence.add_argument("--record-test-map", type=Path,
+                          help="record which functions each test executes, for later test selection")
+    evidence.add_argument("--shards", type=int, help="parallel pytest shards (default: [tests].shards or 1)")
     _config_option(evidence)
+
+    test_select = subparsers.add_parser(
+        "test-select", help="choose the tests a change can affect from a base-branch test impact map")
+    test_select.add_argument("--head-sha", default=os.getenv("GITEA_HEAD_SHA"))
+    test_select.add_argument("--repo-dir", type=Path, default=Path.cwd())
+    test_select.add_argument("--test-map", type=Path, required=True,
+                             help="map from `evidence --record-test-map` on the base branch; may be missing")
+    test_select.add_argument("--output", type=Path, default=Path("test-selection.json"))
+    _config_option(test_select)
 
     evidence_merge = subparsers.add_parser("evidence-merge", help="combine SHA-bound check results")
     evidence_merge.add_argument("--input", type=Path, action="append", required=True)
@@ -286,6 +302,10 @@ def review_command(arguments: argparse.Namespace) -> None:
 def evidence_command(arguments: argparse.Namespace) -> None:
     if arguments.timeout < 1:
         raise ValueError("timeout must be positive")
+    config = _load_config(arguments)
+    selection = None
+    if arguments.selection_file is not None and arguments.selection_file.is_file():
+        selection = Selection.from_json(arguments.selection_file.read_text(encoding="utf-8"))
     evidence = collect_evidence(
         arguments.repo_dir.resolve(),
         str(_required(arguments.head_sha, "head SHA")),
@@ -294,10 +314,62 @@ def evidence_command(arguments: argparse.Namespace) -> None:
         arguments.only,
         arguments.base_sha,
         arguments.trace_output,
-        _environment_policy(_load_config(arguments)),
+        _environment_policy(config),
+        selection,
+        arguments.record_test_map,
+        config.test_shards if arguments.shards is None else arguments.shards,
     )
     arguments.output.write_text(evidence.to_json() + "\n", encoding="utf-8")
     print(f"Evidence written to {arguments.output}")
+
+
+def test_select_command(arguments: argparse.Namespace) -> None:
+    """Decide from git objects and the base-branch map alone; no PR code runs here."""
+    head_sha = validate_sha(str(_required(arguments.head_sha, "head SHA")))
+    config = _load_config(arguments)
+    if not config.test_selection:
+        arguments.output.unlink(missing_ok=True)
+        print(f"Test selection is off; enable [tests].selection in {CONFIG_PATH} to use it")
+        return
+    repository = arguments.repo_dir.resolve()
+    if not arguments.test_map.is_file():
+        selection = full_selection(head_sha, "no_map")
+    elif _tracked_by_git(repository, arguments.test_map):
+        # Only the base-branch workflow writes the map; a copy committed by the PR is not trusted.
+        print(f"Ignoring {arguments.test_map}: the file is tracked in the PR checkout", file=sys.stderr)
+        selection = full_selection(head_sha, "invalid_map")
+    else:
+        try:
+            test_map = TestMap.from_json(arguments.test_map.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            print(f"Ignoring the test impact map: {exc}", file=sys.stderr)
+            selection = full_selection(head_sha, "invalid_map")
+        else:
+            selection = select_tests(repository, head_sha, test_map, config)
+    arguments.output.write_text(selection.to_json() + "\n", encoding="utf-8")
+    if selection.mode == "impact":
+        estimate, total = selection.estimated_seconds
+        print(f"Selected {len(selection.affected or ())} of {len(selection.durations)} mapped tests "
+              f"(~{estimate:.1f}s of {total:.1f}s), plus new tests and {len(selection.test_files)} changed "
+              f"test modules")
+        if selection.uncovered:
+            print("Changed functions no mapped test executes: " + ", ".join(selection.uncovered))
+    else:
+        print(f"Full test run: {selection.reason}{f' ({selection.detail})' if selection.detail else ''}")
+    print(f"Test selection written to {arguments.output}")
+
+
+def _tracked_by_git(repository: Path, path: Path) -> bool:
+    try:
+        relative = path.resolve().relative_to(repository)
+    except ValueError:
+        return False
+    try:
+        result = subprocess.run(["git", "ls-files", "--", relative.as_posix()], cwd=repository,
+                                capture_output=True, text=True, timeout=60, check=True)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError("could not check whether the test impact map is tracked") from exc
+    return bool(result.stdout.strip())
 
 
 def evidence_merge_command(arguments: argparse.Namespace) -> None:
@@ -383,7 +455,7 @@ def config_command(arguments: argparse.Namespace) -> None:
 def _evidence_tests(evidence: Evidence) -> TestResult:
     check = evidence.pytest
     if check.status in {"pass", "fail"} and check.passed is not None and check.total is not None:
-        return TestResult(check.status, check.passed, check.total)
+        return TestResult(check.status, check.passed, check.total, evidence.test_scope)
     return TestResult("error" if check.status != "not_run" else "not_run", None, None)
 
 
@@ -553,6 +625,8 @@ def main(argv: list[str] | None = None) -> int:
             evidence_command(arguments)
         elif arguments.command == "evidence-merge":
             evidence_merge_command(arguments)
+        elif arguments.command == "test-select":
+            test_select_command(arguments)
         elif arguments.command == "review":
             review_command(arguments)
         elif arguments.command == "plan":

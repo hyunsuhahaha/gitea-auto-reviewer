@@ -39,3 +39,17 @@ timeout = 180
 # Django settings that must have these values before any reproduction runs.
 # Use them as safety switches for live integrations.
 # PAYMENT_LIVE_MODE = false
+
+[tests]
+# Run only the tests a change can affect, using the test impact map that
+# examples/workflows/ai-review-test-map-linux.yml records on the base branch.
+# Changes that function coverage cannot bound (module/class-level code,
+# non-Python files, deleted files) still run the full suite.
+selection = false
+# Parallel pytest processes, balanced by recorded test durations (1-16). Each
+# shard gets AI_REVIEW_SHARD_INDEX for a per-shard test database name.
+shards = 1
+# Paths that always run the full suite, and non-Python paths that never affect
+# tests (documentation_paths are already ignored).
+# full_run_paths = ["*/sql/*"]
+# ignore_paths = ["deploy/*"]

@@ -180,16 +180,52 @@ REVIEW_JSON_SCHEMA: dict[str, Any] = {
 }
 
 
+# Why change-aware test selection fell back to the full suite (rendered via messages.py).
+FULL_RUN_REASONS = ("no_map", "invalid_map", "map_not_ancestor", "full_run_path", "non_python",
+                    "removed_file", "module_level", "outside_test")
+
+
+@dataclass(frozen=True)
+class TestScope:
+    """Which part of the suite ran: tests affected by the change, or the full suite and why."""
+
+    mode: str
+    selected: int
+    collected: int
+    reason: str | None = None
+    detail: str | None = None
+
+    @classmethod
+    def from_value(cls, value: object) -> TestScope:
+        if not isinstance(value, dict) or set(value) != {"mode", "selected", "collected", "reason", "detail"}:
+            raise ValueError("test scope must contain mode, selected, collected, reason, and detail")
+        mode, selected, collected = value["mode"], value["selected"], value["collected"]
+        reason, detail = value["reason"], value["detail"]
+        if not (_count(selected) and _count(collected) and selected <= collected):
+            raise ValueError("test scope requires valid selected and collected counts")
+        if mode == "impact":
+            if reason is not None or detail is not None:
+                raise ValueError("impact test scope must not include a full-run reason")
+        elif mode != "full" or reason not in FULL_RUN_REASONS:
+            raise ValueError("full test scope requires a known reason")
+        if detail is not None and (not isinstance(detail, str) or not detail or len(detail) > 300
+                                   or "\n" in detail):
+            raise ValueError("invalid test scope detail")
+        return cls(mode, selected, collected, reason, detail)
+
+
 @dataclass(frozen=True)
 class TestResult:
     status: str
     passed: int | None
     total: int | None
+    scope: TestScope | None = None
 
     @classmethod
     def from_value(cls, value: object) -> TestResult:
-        if not isinstance(value, dict) or set(value) != {"status", "passed", "total"}:
+        if not isinstance(value, dict) or set(value) - {"scope"} != {"status", "passed", "total"}:
             raise ValueError("tests must contain status, passed, and total")
+        scope = None if value.get("scope") is None else TestScope.from_value(value["scope"])
         status, passed, total = value["status"], value["passed"], value["total"]
         if status not in {"pass", "fail", "error", "not_run"}:
             raise ValueError("invalid test status")
@@ -198,7 +234,7 @@ class TestResult:
                 raise ValueError("unavailable tests must use null counts")
         elif not (_count(passed) and _count(total) and passed <= total):
             raise ValueError("run tests require valid passed and total counts")
-        return cls(status, passed, total)
+        return cls(status, passed, total, scope)
 
 
 @dataclass(frozen=True)
@@ -439,6 +475,8 @@ class Review:
         value = asdict(self)
         for name in ("changed_file_paths", "external_integration_evidence", "risk_evidence", "key_changes", "findings", "reproduced_findings", "affected_files", "impact_paths"):
             value[name] = list(value[name])
+        if value["tests"]["scope"] is None:
+            del value["tests"]["scope"]
         return json.dumps(value, ensure_ascii=False, indent=2)
 
 
@@ -704,6 +742,7 @@ def render_markdown(review: Review, pr_number: int, head_sha: str, pr_title: str
         f"{_status_icon(review.django_check)} Django check {_status_text(review.django_check)}",
         f"{_status_icon(review.migration)} Migration check {_migration_text(review.migration, language)}",
         f"{_status_icon(review.tests.status)} {t('tests')} {_test_text(review.tests)}",
+        *([f"  └ {_scope_text(review.tests.scope, language)}"] if review.tests.scope else []),
         "",
         _row(t("risk"), {"low": "🟢 LOW", "medium": "🟡 MEDIUM", "high": "🟠 HIGH"}[review.risk]
              + f" · {t('risk_basis')} {review.risk_confidence.upper()}"),
@@ -838,6 +877,13 @@ def _test_text(result: TestResult) -> str:
     if result.status == "not_run":
         return "NOT RUN"
     return f"{result.passed}/{result.total} {result.status.upper()}"
+
+
+def _scope_text(scope: TestScope, language: str = "ko") -> str:
+    if scope.mode == "impact":
+        return text(language, "test_scope_impact", selected=scope.selected, collected=scope.collected)
+    reason = text(language, f"test_full_{scope.reason}", detail=scope.detail or "")
+    return text(language, "test_scope_full", collected=scope.collected, reason=reason)
 
 
 def _status_icon(status: str) -> str:

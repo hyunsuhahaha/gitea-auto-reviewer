@@ -1,0 +1,73 @@
+# Records the test impact map that PR reviews use to run only the tests a change
+# can affect. Copy next to ai-review.yml (Gitea: .gitea/workflows/, Forgejo:
+# .forgejo/workflows/) and set [tests].selection = true in .ai-review.toml.
+#
+# It runs only for pushes to the base branch, so the map always describes merged
+# code; PR reviews restore it read-only and never write the cache. Change
+# `branches` if your default branch is not `main`.
+name: AI review test impact map
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+# Only the newest base-branch commit's map is worth finishing.
+concurrency:
+  group: ai-review-test-map
+  cancel-in-progress: true
+
+jobs:
+  record:
+    runs-on: ai-review-linux
+    timeout-minutes: 60
+    container:
+      image: ${{ vars.AI_REVIEW_IMAGE || 'gitea-auto-reviewer:0.3.0' }}
+    env:
+      CI_PYTHON: .venv-ci/bin/python
+      CI_PYTHON_VERSION: ${{ vars.AI_REVIEW_PYTHON_VERSION || '3.11' }}
+      CI_REQUIREMENTS: ${{ vars.AI_REVIEW_REQUIREMENTS || 'requirements-ci.txt' }}
+    steps:
+      - name: Check out base branch commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Resolve review settings
+        run: |
+          set -euo pipefail
+          git config --global --add safe.directory "$PWD"
+          config_file="$RUNNER_TEMP/gitea-auto-review-config.json"
+          gitea-auto-reviewer config --base-sha "$GITHUB_SHA" --output "$config_file"
+          echo "AI_REVIEW_CONFIG_FILE=$config_file" >> "$GITHUB_ENV"
+
+      - name: Create isolated CI environment
+        run: |
+          set -euo pipefail
+          uv venv --clear .venv-ci --python "$CI_PYTHON_VERSION"
+          uv pip install --python "$CI_PYTHON" -r "$CI_REQUIREMENTS"
+
+      # Runs the full suite once with the recording plugin: which repository
+      # functions each test executed (fixtures and setUpClass included), its
+      # duration for shard balancing, and its outcome.
+      - name: Record test impact map
+        run: |
+          gitea-auto-reviewer evidence \
+            --head-sha "$GITHUB_SHA" \
+            --python "$CI_PYTHON" \
+            --only pytest \
+            --record-test-map .ai-review-test-map/test-map.json \
+            --output "$RUNNER_TEMP/gitea-auto-review-pytest.json"
+
+      - name: Save test impact map
+        uses: actions/cache/save@v4
+        with:
+          path: .ai-review-test-map
+          key: ai-review-test-map-${{ github.sha }}
